@@ -80,13 +80,23 @@ def create_app() -> FastAPI:
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 
     # Allow frontend domains (or standard origins) with credentials
+    env_origins = os.getenv("CORS_ORIGINS", "") or os.getenv("ALLOWED_ORIGINS", "")
     origins = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "https://fairenough-rosy.vercel.app",
     ]
+    if env_origins and env_origins != "*":
+        for o in env_origins.split(","):
+            cleaned = o.strip()
+            if cleaned and cleaned not in origins:
+                origins.append(cleaned)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
+        allow_origin_regex=r"https://.*\.vercel\.app|http://localhost:\d+|http://127\.0\.0\.1:\d+",
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],

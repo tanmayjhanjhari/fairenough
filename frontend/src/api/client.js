@@ -1,8 +1,18 @@
 import axios from 'axios'
 import toast from 'react-hot-toast'
 
+const getBaseURL = () => {
+  if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL;
+  if (import.meta.env.VITE_API_BASE_URL) return import.meta.env.VITE_API_BASE_URL;
+  // If running in browser on production (e.g. Vercel), route directly to Render backend
+  if (typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+    return 'https://fairenough-backend.onrender.com';
+  }
+  return 'http://localhost:8000';
+};
+
 const client = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || 'http://localhost:8000',
+  baseURL: getBaseURL(),
   timeout: 60000,
   headers: {
     "Content-Type": "application/json",
