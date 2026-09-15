@@ -280,7 +280,11 @@ class BiasMitigator:
         for col in feature_cols:
             try:
                 if df_work[col].dtype in ["int64", "float64", "int32", "float32"]:
-                    X_parts.append(df_work[[col]].values.astype(float))
+                    col_series = pd.to_numeric(df_work[col], errors="coerce")
+                    if col_series.isna().any():
+                        med = col_series.median()
+                        col_series = col_series.fillna(med if not pd.isna(med) else 0.0)
+                    X_parts.append(col_series.values.reshape(-1, 1).astype(float))
                 else:
                     enc = LabelEncoder().fit_transform(
                         df_work[col].fillna("missing").astype(str)
@@ -292,7 +296,11 @@ class BiasMitigator:
 
         if not X_parts:
             return np.zeros((len(df_work), 1)), []
-        return np.hstack(X_parts), used_cols
+        
+        X_mat = np.hstack(X_parts)
+        if np.isnan(X_mat).any() or np.isinf(X_mat).any():
+            X_mat = np.nan_to_num(X_mat, nan=0.0, posinf=0.0, neginf=0.0)
+        return X_mat, used_cols
 
     # ── Prepare features for the REAL MODEL ───────────────────────────────────
 
@@ -1144,9 +1152,9 @@ class BiasMitigator:
         s_test = s_all[idx_test]
 
         model_sim = GradientBoostingClassifier(
-            n_estimators=150,
+            n_estimators=60,
             max_depth=3,
-            learning_rate=0.05,
+            learning_rate=0.1,
             subsample=0.8,
             random_state=self.RANDOM_STATE,
         )
@@ -1433,9 +1441,9 @@ class BiasMitigator:
 
             # Before (no weights)
             m1 = GradientBoostingClassifier(
-                n_estimators=150,
+                n_estimators=60,
                 max_depth=3,
-                learning_rate=0.05,
+                learning_rate=0.1,
                 subsample=0.8,
                 random_state=self.RANDOM_STATE,
             )
@@ -1460,9 +1468,9 @@ class BiasMitigator:
 
             w_train = weights[idx_train]
             m2 = GradientBoostingClassifier(
-                n_estimators=150,
+                n_estimators=60,
                 max_depth=3,
-                learning_rate=0.05,
+                learning_rate=0.1,
                 subsample=0.8,
                 random_state=self.RANDOM_STATE,
             )
