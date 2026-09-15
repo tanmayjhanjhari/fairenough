@@ -51,7 +51,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, GradientBoostingClassifier
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
@@ -1151,11 +1151,11 @@ class BiasMitigator:
         y_train, y_test = y_all[idx_train], y_all[idx_test]
         s_test = s_all[idx_test]
 
-        model_sim = GradientBoostingClassifier(
-            n_estimators=60,
-            max_depth=3,
+        # Use HistGradientBoostingClassifier which natively accepts NaNs and trains 10x faster
+        model_sim = HistGradientBoostingClassifier(
+            max_iter=60,
+            max_depth=4,
             learning_rate=0.1,
-            subsample=0.8,
             random_state=self.RANDOM_STATE,
         )
         model_sim.fit(X_train, y_train)
@@ -1440,11 +1440,10 @@ class BiasMitigator:
             s_test = s_all[idx_test]
 
             # Before (no weights)
-            m1 = GradientBoostingClassifier(
-                n_estimators=60,
-                max_depth=3,
+            m1 = HistGradientBoostingClassifier(
+                max_iter=60,
+                max_depth=4,
                 learning_rate=0.1,
-                subsample=0.8,
                 random_state=self.RANDOM_STATE,
             )
             m1.fit(X_train, y_train)
@@ -1467,11 +1466,10 @@ class BiasMitigator:
                 return sim_before, None
 
             w_train = weights[idx_train]
-            m2 = GradientBoostingClassifier(
-                n_estimators=60,
-                max_depth=3,
+            m2 = HistGradientBoostingClassifier(
+                max_iter=60,
+                max_depth=4,
                 learning_rate=0.1,
-                subsample=0.8,
                 random_state=self.RANDOM_STATE,
             )
             m2.fit(X_train, y_train, sample_weight=w_train)
