@@ -36,7 +36,7 @@ METRIC HONESTY POLICY
   - Acc/Precision/Recall/F1: from real model when available, GBM sim otherwise.
 
   - Sensitive attribute binning mirrors BiasEngine exactly
-    (CARDINALITY_BIN_THRESHOLD=10, CONTINUOUS_BIN_THRESHOLD=50.0).
+    (CARDINALITY_BIN_THRESHOLD=10, data-driven median split).
 
 GENERIC DESIGN
 ==============
@@ -77,28 +77,50 @@ class BiasMitigator:
 
     # Must match BiasEngine constants exactly
     CARDINALITY_BIN_THRESHOLD: int = 10
-    CONTINUOUS_BIN_THRESHOLD: float = 50.0
-    CONTINUOUS_BIN_LABELS: tuple = ("Younger (<50)", "Older (>=50)")
+    CONTINUOUS_BIN_THRESHOLD: float | None = None
+    CONTINUOUS_BIN_LABELS: tuple = ("Low (<= median)", "High (> median)")
 
     # ── Binning (mirrors BiasEngine._bin_continuous_attr) ─────────────────────
 
     def _apply_binning(self, series: pd.Series, attr: str) -> pd.Series:
         """
-        Apply the same binning logic as BiasEngine._bin_continuous_attr.
+        Apply the same data-driven binning logic as BiasEngine._bin_continuous_attr.
         Numeric attrs with > CARDINALITY_BIN_THRESHOLD unique values are
-        binned into two groups at CONTINUOUS_BIN_THRESHOLD.
+        binned into two groups using a median split. Fully domain-agnostic.
         """
         if (
             pd.api.types.is_numeric_dtype(series)
             and series.nunique() > self.CARDINALITY_BIN_THRESHOLD
         ):
-            threshold = self.CONTINUOUS_BIN_THRESHOLD
-            low_label, high_label = self.CONTINUOUS_BIN_LABELS
-            return series.apply(
-                lambda v: high_label
-                if pd.notna(v) and float(v) >= threshold
-                else low_label
-            )
+            valid = pd.to_numeric(series.dropna(), errors="coerce").dropna()
+            if valid.empty or valid.nunique() < 2:
+                return series.astype(str)
+
+            split_val = float(valid.median())
+            high_mask = valid > split_val
+
+            if high_mask.sum() == 0 and (valid < split_val).sum() > 0:
+                low_op, high_op = "<", ">="
+            else:
+                low_op, high_op = "<=", ">"
+
+            split_str = f"{split_val:g}"
+            low_label = f"{attr} {low_op} {split_str}"
+            high_label = f"{attr} {high_op} {split_str}"
+
+            def _assign_bin(v):
+                if pd.isna(v):
+                    return low_label
+                try:
+                    fv = float(v)
+                    if high_op == ">=":
+                        return high_label if fv >= split_val else low_label
+                    else:
+                        return high_label if fv > split_val else low_label
+                except (ValueError, TypeError):
+                    return low_label
+
+            return series.apply(_assign_bin)
         return series.astype(str)
 
     # ── Binarize target ────────────────────────────────────────────────────────

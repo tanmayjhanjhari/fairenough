@@ -1,3 +1,4 @@
+import { AlertTriangle, Info } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
@@ -184,6 +185,12 @@ export default function ResultsPage() {
                 transition={{ duration: 0.2 }}
                 className="space-y-8"
               >
+                {currentMetrics.error && (
+                  <div className="p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-200 text-xs flex items-center gap-3">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span>{currentMetrics.error}</span>
+                  </div>
+                )}
                 <MetricCards
                   metrics={currentMetrics}
                   worstGroup={worstGroup}
@@ -215,11 +222,31 @@ export default function ResultsPage() {
                 transition={{ duration: 0.2 }}
               >
                 <div className="mb-6">
-                  <h3 className="text-lg font-semibold text-textPrimary mb-1">Group Positive Rates</h3>
+                  <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                    <h3 className="text-lg font-semibold text-textPrimary">Group Positive Rates</h3>
+                    {currentMetrics.binning_applied && (
+                      <span className="text-xs px-2.5 py-0.5 rounded-full bg-accent/15 text-accent border border-accent/20 font-mono">
+                        Data-Driven Grouping (Median)
+                      </span>
+                    )}
+                  </div>
                   <p className="text-sm text-textSecondary">
                     The percentage of favorable outcomes received by each demographic group within <span className="font-medium text-textPrimary">{activeAttr}</span>.
                   </p>
+                  {currentMetrics.binning_note && (
+                    <p className="text-xs text-textSecondary/80 mt-1 italic">
+                      <Info className="w-3.5 h-3.5 inline-block mr-1 text-accent shrink-0" />{currentMetrics.binning_note}
+                    </p>
+                  )}
                 </div>
+
+                {currentMetrics.error && (
+                  <div className="mb-6 p-4 rounded-xl bg-amber-500/10 border border-amber-500/20 text-amber-200 text-xs flex items-center gap-3">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span>{currentMetrics.error}</span>
+                  </div>
+                )}
+
                 <GroupBarChart groupStats={groupStats} />
               </motion.div>
             )}

@@ -107,9 +107,8 @@ class TestAgeBinning:
         attr_metrics = result["metrics_per_attr"]["Age"]
         group_stats = attr_metrics.get("group_stats", {})
         group_names = set(group_stats.keys())
-        expected = {engine.CONTINUOUS_BIN_LABELS[0], engine.CONTINUOUS_BIN_LABELS[1]}
-        assert group_names == expected, \
-            f"Expected groups {expected}, got {group_names}"
+        assert len(group_names) == 2, f"Expected 2 groups, got {group_names}"
+        assert all("Age" in g for g in group_names), f"Expected 'Age' in group names, got {group_names}"
 
     def test_binning_applied_flag(self, engine, pima_like_df):
         result = engine.analyze(pima_like_df, "Outcome", ["Age"], use_predictions=False)

@@ -24,14 +24,13 @@ not "perfectly fair".
 CONTINUOUS ATTRIBUTE BINNING
 =============================
 Numeric sensitive attributes with more than CARDINALITY_BIN_THRESHOLD
-unique values are automatically binned into two groups using
-CONTINUOUS_BIN_THRESHOLD as the cut-off.
+unique values are automatically partitioned into two groups using a
+data-driven median split:
+  attr <= median  → "{attr} <= {median}"
+  attr > median   → "{attr} > {median}"
 
-  Age < 50  → "Younger (<50)"   [unprivileged by convention]
-  Age >= 50 → "Older (>=50)"    [privileged   by convention]
-
-This avoids the statistical nonsense of comparing individual ages that
-each have fewer than 10 samples.
+This is completely domain-agnostic and avoids high-cardinality fragmentation
+where groups have too few samples.
 """
 
 from __future__ import annotations
@@ -59,10 +58,8 @@ class BiasEngine:
     # If a numeric attribute has more than this many unique values it is
     # automatically binned into two groups.
     CARDINALITY_BIN_THRESHOLD: int = 10
-    # The numeric cut-off used for binary binning (e.g. Age).
-    CONTINUOUS_BIN_THRESHOLD: float = 50.0
-    # Labels for the two bins.  (unprivileged, privileged)
-    CONTINUOUS_BIN_LABELS: tuple[str, str] = ("Younger (<50)", "Older (>=50)")
+    CONTINUOUS_BIN_THRESHOLD: float | None = None
+    CONTINUOUS_BIN_LABELS: tuple[str, str] = ("Low (<= median)", "High (> median)")
 
     # ── Public API ──────────────────────────────────────────────────────────
 
@@ -142,20 +139,44 @@ class BiasEngine:
         attr: str,
     ) -> tuple[pd.Series, str]:
         """
-        Bin a continuous numeric attribute into two labelled groups.
-
+        Bin a continuous numeric attribute into two labelled groups using data-driven median split.
+        Completely domain-agnostic (never assumes age or fixed domain cutoffs).
         Returns the binned Series and a description string.
         """
-        threshold = self.CONTINUOUS_BIN_THRESHOLD
-        low_label, high_label = self.CONTINUOUS_BIN_LABELS
+        valid = pd.to_numeric(series.dropna(), errors="coerce").dropna()
+        if valid.empty or valid.nunique() < 2:
+            return series.astype(str), f"'{attr}' has insufficient variation to partition into groups."
 
-        binned = series.apply(
-            lambda v: high_label if pd.notna(v) and float(v) >= threshold else low_label
-        )
+        split_val = float(valid.median())
+        high_mask = valid > split_val
+
+        # If median equals max value, split at < median instead so both bins are non-empty
+        if high_mask.sum() == 0 and (valid < split_val).sum() > 0:
+            low_op, high_op = "<", ">="
+        else:
+            low_op, high_op = "<=", ">"
+
+        split_str = f"{split_val:g}"
+        low_label = f"{attr} {low_op} {split_str}"
+        high_label = f"{attr} {high_op} {split_str}"
+
+        def _assign_bin(v):
+            if pd.isna(v):
+                return low_label
+            try:
+                fv = float(v)
+                if high_op == ">=":
+                    return high_label if fv >= split_val else low_label
+                else:
+                    return high_label if fv > split_val else low_label
+            except (ValueError, TypeError):
+                return low_label
+
+        binned = series.apply(_assign_bin)
         desc = (
-            f"'{attr}' was automatically binned: "
-            f"values < {threshold} → '{low_label}', "
-            f"values >= {threshold} → '{high_label}'."
+            f"'{attr}' has {valid.nunique()} unique numeric values. "
+            f"Automatically partitioned by median ({split_str}): "
+            f"'{low_label}' / '{high_label}'."
         )
         return binned, desc
 
@@ -201,12 +222,7 @@ class BiasEngine:
             binned_series, binning_note = self._bin_continuous_attr(df_work[attr], attr)
             df_work['__sens_raw__'] = binned_series
             binning_applied = True
-            warnings_list.append(
-                f"'{attr}' has {raw_n_unique} unique numeric values. "
-                f"Automatically binned into 2 groups using threshold "
-                f"{self.CONTINUOUS_BIN_THRESHOLD}: "
-                f"{self.CONTINUOUS_BIN_LABELS[0]} / {self.CONTINUOUS_BIN_LABELS[1]}."
-            )
+            warnings_list.append(binning_note)
         else:
             df_work['__sens_raw__'] = df_work[attr].astype(str)
 
@@ -257,9 +273,8 @@ class BiasEngine:
 
         # ── Step 5: Identify privileged / unprivileged groups ───────────────
         # Privileged = highest positive rate (most advantaged outcome).
-        # For a binned age attribute, "Older (>=50)" or "Younger (<50)"
-        # is determined by data, not hardcoded — this is intentionally
-        # data-driven and consistent throughout.
+        # For a binned attribute, group status is determined strictly
+        # by data distribution, not hardcoded — intentionally data-driven.
         priv_name   = max(group_stats, key=lambda g: group_stats[g]["positive_rate"])
         unpriv_name = min(group_stats, key=lambda g: group_stats[g]["positive_rate"])
         priv_rate   = group_stats[priv_name]["positive_rate"]
