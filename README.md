@@ -81,6 +81,54 @@ As AI systems become ubiquitous in decision-making, ensuring algorithmic fairnes
 
 ---
 
+## Domain-Agnostic Fairness Auditing
+
+FairEnough is designed to be **fully domain-agnostic**. It is not tied to any specific industry, pre-configured schema, or benchmark dataset (such as Adult Census or COMPAS). Instead, it audits arbitrary tabular CSV datasets across diverse real-world domains — including financial lending, healthcare triage, hiring & recruitment, content moderation, higher education, and insurance.
+
+### Key Principles
+
+- **Industry & Domain Independence**: FairEnough operates on any tabular dataset regardless of domain or application area.
+- **Flexible Column Selection**: Works with arbitrary tabular CSV files where users interactively select the **target/outcome column** and one or more **sensitive attributes**.
+- **Categorical & Numeric Sensitive Attributes**: Sensitive attributes can be categorical (discrete demographic groups) or numeric (including continuous scales, test scores, or fractional values).
+- **No Fixed Schema or Naming Conventions**: Extra feature or metadata columns are freely permitted. There is no required column naming scheme (such as `age`, `gender`, or `income`).
+- **Meaningful Outcome Target**: The selected target column must represent a meaningful outcome decision and should generally be binary or categorical (e.g., approved/denied, accepted/rejected, toxic/non-toxic) for demographic fairness analysis.
+- **Minimum Group Requirement**: Group-based fairness evaluation mathematically requires at least two distinct demographic groups with sufficient sample representation.
+- **Data-Driven Grouping for High Cardinality**: Rather than relying on domain-specific assumptions or hardcoded thresholds, any numeric sensitive attribute with high cardinality (>10 unique values) is automatically partitioned into groups using an empirical **data-driven median split** (`attr <= median` vs `attr > median`).
+- **Honest Dataset vs. Model Auditing**:
+  - **Dataset-Only Auditing**: When evaluating a standalone dataset without a model, FairEnough computes applicable outcome-based metrics directly from historical decisions — specifically **Statistical Parity Difference (SPD)** and **Disparate Impact (DI)**.
+  - **Model-Dependent Auditing**: Error-rate fairness metrics (**Equal Opportunity Difference (EOD)** and **Average Odds Difference (AOD)**) and performance metrics (Accuracy, Precision, Recall, F1) strictly require a compatible trained model with predictions. FairEnough never fabricates model-level metrics when evaluating a dataset in isolation.
+- **Transparent Validation & Safeguards**: Datasets with insufficient variation, fewer than two valid groups, or unsuitable target values trigger explicit validation and warning alerts rather than generating misleading or skewed statistics.
+
+### Schema Examples
+
+#### Example 1: Financial Lending & Credit Scoring
+Demonstrates a traditional decision pipeline with demographic and economic features:
+```csv
+age,gender,income,approved
+28,Female,62000,1
+45,Male,89000,1
+52,Female,54000,0
+31,Non-Binary,71000,1
+```
+* **Target Column**: `approved` (Binary decision: `0` = denied, `1` = approved)
+* **Sensitive Attribute**: `gender` (Discrete categorical groups) or `age` / `income` (Continuous numeric attributes automatically partitioned by median)
+* **Extra Features**: `income`, `age` (Additional feature columns permitted without fixed naming rules)
+
+#### Example 2: Content Moderation & NLP Annotation
+Demonstrates an entirely different domain with fractional continuous scores and arbitrary column names:
+```csv
+post_id,subforum,annotator_score,flagged_as_toxic
+p_101,gaming,0.20,0
+p_102,news,0.85,1
+p_103,sports,0.40,0
+p_104,news,0.70,1
+```
+* **Target Column**: `flagged_as_toxic` (Binary decision: `0` = non-toxic, `1` = toxic)
+* **Sensitive Attribute**: `annotator_score` (Continuous fractional agreement ratio partitioned via data-driven median split) or `subforum` (Categorical topic group)
+* **Extra Features**: `post_id` (Identifier column ignored by fairness calculations)
+
+---
+
 ## Methods Applied
 
 FairEnough combines rigorous statistical fairness formulas with machine learning pre/post-processing algorithms:
