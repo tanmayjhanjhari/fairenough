@@ -1,4 +1,4 @@
-"""
+﻿"""
 FairEnough -- PDF Report Generator (v2 -- Professional Audit Edition)
 
 Generates a dark-themed 5-page professional audit report readable by
@@ -970,8 +970,9 @@ class ReportGenerator:
             return (tick,"\u2014") if rw3 else ("\u2014",tick)
 
         def gs2(d,k):
+            # Returns raw signed value. abs() only used internally for winner comparison.
             v = (d or {}).get(k.upper(),(d or {}).get(k.lower()))
-            return abs(float(v)) if v is not None else None
+            return float(v) if v is not None else None
 
         sr = [[Paragraph("Metric",_S_H3), Paragraph("Reweighing",_S_H3),
                Paragraph("Threshold Adj.",_S_H3), Paragraph("Winner",_S_H3)]]
@@ -1220,3 +1221,4 @@ class ReportGenerator:
         story.append(Paragraph("This report does not constitute legal advice.",
             _s("ff2", fontName="Helvetica-Oblique", fontSize=7, textColor=GRAY, leading=10, alignment=1)))
         return story
+

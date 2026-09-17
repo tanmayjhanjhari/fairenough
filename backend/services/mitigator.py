@@ -1,4 +1,4 @@
-"""
+﻿"""
 FairEnough - Generic Bias Mitigator Service
 
 ARCHITECTURE
@@ -60,6 +60,10 @@ from sklearn.metrics import (
     recall_score,
 )
 from sklearn.model_selection import train_test_split
+import copy
+import inspect
+from sklearn.base import clone
+from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder
 
 
@@ -82,6 +86,68 @@ def _ensure_estimator_compatibility(estimator: Any) -> None:
     if hasattr(estimator, "estimators_"):
         for sub in getattr(estimator, "estimators_", []):
             _ensure_estimator_compatibility(sub)
+
+
+
+def _check_sample_weight_support(estimator: Any) -> tuple[bool, str | None]:
+    """
+    Check if estimator supports sample_weight during fit().
+    Returns (supported: bool, fit_param_name: str | None).
+    For standard estimators, returns (True, 'sample_weight').
+    For scikit-learn Pipeline, inspects final step and returns (True, '{final_step_name}__sample_weight').
+    """
+    if estimator is None:
+        return False, None
+
+    if isinstance(estimator, Pipeline):
+        if not hasattr(estimator, "steps") or not estimator.steps:
+            return False, None
+        final_step_name, final_estimator = estimator.steps[-1]
+        supp, _ = _check_sample_weight_support(final_estimator)
+        if supp:
+            return True, f"{final_step_name}__sample_weight"
+        return False, None
+
+    fit_fn = getattr(estimator, "fit", None)
+    if fit_fn is None or not callable(fit_fn):
+        return False, None
+
+    try:
+        sig = inspect.signature(fit_fn)
+        if "sample_weight" in sig.parameters:
+            return True, "sample_weight"
+        for param in sig.parameters.values():
+            if param.kind == inspect.Parameter.VAR_KEYWORD:
+                return True, "sample_weight"
+    except (ValueError, TypeError):
+        pass
+
+    return False, None
+
+
+def _clone_or_recreate_estimator(estimator: Any) -> Any:
+    """
+    Safely produce a fresh unfitted estimator compatible with the original.
+    Preserves the original uploaded model untouched.
+    """
+    if estimator is None:
+        return None
+
+    try:
+        new_est = clone(estimator)
+        _ensure_estimator_compatibility(new_est)
+        return new_est
+    except Exception:
+        pass
+
+    try:
+        new_est = copy.deepcopy(estimator)
+        _ensure_estimator_compatibility(new_est)
+        return new_est
+    except Exception:
+        pass
+
+    return None
 
 
 class BiasMitigator:
@@ -421,6 +487,8 @@ class BiasMitigator:
             baseline_group_stats=baseline_group_stats,
             model=model,
             df_with_pred=df_with_pred,
+            column_mapping=column_mapping,
+            dropped_cols=dropped_cols,
         )
         thr = self.threshold_adjust(
             df=df,
@@ -582,18 +650,28 @@ class BiasMitigator:
         baseline_group_stats: dict | None = None,
         model: Any = None,
         df_with_pred: pd.DataFrame | None = None,
+        column_mapping: dict[str, str] | None = None,
+        dropped_cols: dict[str, Any] | list[str] | None = None,
     ) -> dict[str, Any]:
         """
-        Genuine dataset-level reweighing.
+        Genuine dataset-level reweighing with optional model retraining.
 
         - Computes IBM reweighing weights: w = P(G)*P(Y) / P(G,Y).
-        - "After" SPD/DI from weighted dataset positive rates (dataset-level).
-        - EOD/AOD "before": real from model predictions if df_with_pred given.
-        - EOD/AOD "after" reweighing: from internal GBM with weights (sim).
-        - Performance metrics: from internal GBM simulation (always labelled).
-        - is_simulation = False for SPD/DI (real data); True for EOD/AOD after.
-
-        Generic: works for any dataset/target/sensitive-attribute.
+        - When a real model supporting sample_weight is supplied:
+          1. Splits data into train / evaluation splits (70/30).
+          2. Calculates reweighing weights purely on the training portion (no data leakage).
+          3. Clones a fresh instance of the model (preserving original model untouched).
+          4. Retrains fresh instance using sample_weight=weights (or pipeline step param).
+          5. Generates NEW predictions on the held-out evaluation portion.
+          6. Computes NEW fairness metrics (SPD, DI, EOD, AOD) and NEW performance metrics
+             (Accuracy, Precision, Recall, F1) from new predictions.
+          7. Also evaluates the original model on the exact same evaluation split for
+             apples-to-apples Before vs After comparison.
+        - When no model is supplied (dataset-only mode):
+          Computes dataset-level SPD and DI from reweighted outcome distributions.
+          Performance metrics remain null/N/A.
+        - When model does not support sample_weight:
+          Performance metrics remain null/N/A and simulation_note explains why.
         """
         df_work = df.copy().dropna(subset=[target_col, sensitive_attr])
 
@@ -601,21 +679,19 @@ class BiasMitigator:
         df_work["__sens_binned__"] = self._apply_binning(
             df_work[sensitive_attr], sensitive_attr
         )
-
         df_work["__y__"] = self._binarize(df_work[target_col])
 
-        # ── BEFORE: authoritative analysis baseline ──────────────────────────
+        # ?? BEFORE: authoritative analysis baseline ??????????????????????????
         if baseline_spd is not None and baseline_di is not None:
             before_spd = float(baseline_spd)
             before_di = float(baseline_di)
             before_gs = baseline_group_stats or {}
         else:
-            # Fallback: compute from dataset (same formula as BiasEngine)
             before_spd, before_di, before_gs = self._dataset_spd_di(
                 df_work, "__y__", "__sens_binned__"
             )
 
-        # ── Real model-level before metrics (EOD/AOD) ────────────────────────
+        # ?? Real model-level before metrics (EOD/AOD) ????????????????????????
         before_eod: float | None = None
         before_aod: float | None = None
         real_model_before = False
@@ -629,22 +705,17 @@ class BiasMitigator:
                     df_pred_work[sensitive_attr], sensitive_attr
                 )
                 le = LabelEncoder()
-                s_all = le.fit_transform(df_pred_work["__sens_binned__"])
+                s_all_pred = le.fit_transform(df_pred_work["__sens_binned__"])
                 y_true = self._binarize(df_pred_work[target_col]).values
                 y_pred = self._binarize(df_pred_work["__predictions__"]).values
                 eod, aod, _, _ = self._compute_eod_aod_from_predictions(
-                    y_true, y_pred, s_all
+                    y_true, y_pred, s_all_pred
                 )
                 before_eod = eod
                 before_aod = aod
                 real_model_before = True
             except Exception as exc:
                 print(f"[Mitigator/Reweigh] Real before EOD/AOD failed: {exc}")
-
-        SIM_NOTE_PERF = (
-            "Performance metrics (Acc/Precision/Recall/F1) come from an internal "
-            "GBM simulation model, not from the real deployed model."
-        )
 
         before: dict[str, Any] = {
             "SPD": round(before_spd, 4),
@@ -655,9 +726,28 @@ class BiasMitigator:
             "aod_available": before_aod is not None,
             "metrics_mode": "model_level" if real_model_before else "dataset_level",
             "group_stats": before_gs,
+            "simulation_note": None,
         }
 
-        # ── Compute IBM reweighing weights ───────────────────────────────────
+        # If df_with_pred gave baseline predictions, calculate baseline performance metrics
+        if real_model_before and df_with_pred is not None and "__predictions__" in df_with_pred.columns:
+            try:
+                y_true_all = self._binarize(df_pred_work[target_col]).values
+                y_pred_all = self._binarize(df_pred_work["__predictions__"]).values
+                before["accuracy"] = round(float(accuracy_score(y_true_all, y_pred_all)), 4)
+                before["precision"] = round(
+                    float(precision_score(y_true_all, y_pred_all, zero_division=0)), 4
+                )
+                before["recall"] = round(
+                    float(recall_score(y_true_all, y_pred_all, zero_division=0)), 4
+                )
+                before["f1"] = round(
+                    float(f1_score(y_true_all, y_pred_all, zero_division=0)), 4
+                )
+            except Exception:
+                pass
+
+        # ?? Compute IBM reweighing weights across the dataset ????????????????
         n = len(df_work)
         le_s = LabelEncoder()
         s_all = le_s.fit_transform(df_work["__sens_binned__"])
@@ -678,35 +768,26 @@ class BiasMitigator:
         weights = np.clip(weights, 0.1, 10.0)
         df_work["__weight__"] = weights
 
-        # ── AFTER: dataset-level SPD/DI from reweighted positive rates ───────
+        # Build group x outcome weight summary
+        reweighing_group_outcome_weights: list[dict[str, Any]] = []
+        for g in np.unique(s_all):
+            for label in np.unique(y_all):
+                mask = (s_all == g) & (y_all == label)
+                cnt = int(mask.sum())
+                if cnt == 0:
+                    continue
+                g_label = str(le_s.inverse_transform([g])[0]) if hasattr(le_s, "inverse_transform") else str(g)
+                w_val = float(weights[mask][0])
+                reweighing_group_outcome_weights.append({
+                    "group": g_label,
+                    "outcome": int(label) if isinstance(label, (int, np.integer)) else label,
+                    "count": cnt,
+                    "weight": round(w_val, 4),
+                })
+
+        # ?? Dataset-level SPD/DI from reweighted positive rates ???????????????
         after_spd, after_di, after_gs = self._dataset_spd_di(
             df_work, "__y__", "__sens_binned__", weight_col="__weight__"
-        )
-
-        # If real model predictions are available in df_with_pred, compute genuine baseline performance
-        if real_model_before:
-            try:
-                y_true_all = self._binarize(df_pred_work[target_col]).values
-                y_pred_all = self._binarize(df_pred_work["__predictions__"]).values
-                before["accuracy"] = round(float(accuracy_score(y_true_all, y_pred_all)), 4)
-                before["precision"] = round(
-                    float(precision_score(y_true_all, y_pred_all, zero_division=0)), 4
-                )
-                before["recall"] = round(
-                    float(recall_score(y_true_all, y_pred_all, zero_division=0)), 4
-                )
-                before["f1"] = round(
-                    float(f1_score(y_true_all, y_pred_all, zero_division=0)), 4
-                )
-                before["simulation_note"] = None
-            except Exception:
-                pass
-
-        REW_PERF_NOTE = (
-            "Model-level performance metrics (Accuracy, F1) post-reweighing are unavailable "
-            "because reweighing operates at the dataset level. Retraining the model with sample "
-            "weights requires a compatible training interface. Dataset-level fairness metrics "
-            "(SPD, DI) reflect actual outcome distributions after applying statistical sample weights."
         )
 
         after: dict[str, Any] = {
@@ -722,24 +803,168 @@ class BiasMitigator:
             "precision": None,
             "recall": None,
             "f1": None,
-            "simulation_note": REW_PERF_NOTE,
+            "simulation_note": None,
         }
 
-        if "simulation_note" not in before or before["simulation_note"] is None:
-            if not real_model_before:
-                before["simulation_note"] = (
-                    "Performance metrics require an evaluated model. "
-                    "Dataset-level fairness metrics (SPD, DI) reflect actual outcome distributions."
-                )
-
-        # ── Effects ──────────────────────────────────────────────────────────
-        effects = self._compute_effects(before, after)
-
+        # ?? Model Retraining Path ?????????????????????????????????????????????
+        model_retrained = False
+        sw_supported = False
+        n_train_samples: int | None = None
+        n_eval_samples: int | None = None
+        retrained_model: Any = None
         has_real_model = bool((model is not None) or real_model_before)
-        if not has_real_model:
-            rew_perf_note = "Model-level performance unavailable — no model uploaded"
-            before["simulation_note"] = rew_perf_note
-            after["simulation_note"] = rew_perf_note
+
+        if model is not None:
+            sw_supported, sw_param = _check_sample_weight_support(model)
+            if sw_supported and sw_param:
+                try:
+                    _ensure_estimator_compatibility(model)
+                    X_all = self._prepare_features_for_model(
+                        df_work,
+                        model,
+                        target_col,
+                        sensitive_attr,
+                        column_mapping=column_mapping,
+                        dropped_cols=dropped_cols,
+                    )
+                    if X_all is not None:
+                        n_samples = len(df_work)
+                        if n_samples >= 10:
+                            try:
+                                train_idx, test_idx = train_test_split(
+                                    np.arange(n_samples),
+                                    test_size=self.TEST_SIZE,
+                                    random_state=self.RANDOM_STATE,
+                                    stratify=y_all if (pd.Series(y_all).value_counts().min() >= 2) else None,
+                                )
+                            except Exception:
+                                train_idx, test_idx = train_test_split(
+                                    np.arange(n_samples),
+                                    test_size=self.TEST_SIZE,
+                                    random_state=self.RANDOM_STATE,
+                                )
+                        else:
+                            train_idx = np.arange(n_samples)
+                            test_idx = np.arange(n_samples)
+
+                        # Calculate weights on training set only (prevent test leakage)
+                        s_tr = s_all[train_idx]
+                        y_tr = y_all[train_idx]
+                        n_tr = len(train_idx)
+                        w_tr = np.ones(n_tr)
+                        for g in np.unique(s_tr):
+                            for label in np.unique(y_tr):
+                                mask_tr = (s_tr == g) & (y_tr == label)
+                                cnt_tr = int(mask_tr.sum())
+                                if cnt_tr == 0:
+                                    continue
+                                p_g_tr = float((s_tr == g).sum()) / n_tr
+                                p_l_tr = float((y_tr == label).sum()) / n_tr
+                                p_gl_tr = cnt_tr / n_tr
+                                w_tr[mask_tr] = (p_g_tr * p_l_tr) / p_gl_tr
+                        w_tr = np.clip(w_tr, 0.1, 10.0)
+
+                        new_est = _clone_or_recreate_estimator(model)
+                        if new_est is not None:
+                            fit_kwargs = {sw_param: w_tr}
+                            X_tr = X_all.iloc[train_idx] if hasattr(X_all, "iloc") else X_all[train_idx]
+                            X_ev = X_all.iloc[test_idx] if hasattr(X_all, "iloc") else X_all[test_idx]
+                            y_ev = y_all[test_idx]
+                            s_ev = s_all[test_idx]
+
+                            try:
+                                new_est.fit(X_tr, y_tr, **fit_kwargs)
+                            except Exception as fit_exc:
+                                has_str = hasattr(model, "feature_names_in_") or hasattr(model, "steps")
+                                if not has_str:
+                                    new_est.fit(getattr(X_tr, "values", X_tr), y_tr, **fit_kwargs)
+                                else:
+                                    raise fit_exc
+
+                            # Generate new predictions from retrained model
+                            try:
+                                pred_new_raw = new_est.predict(X_ev)
+                            except Exception:
+                                pred_new_raw = new_est.predict(getattr(X_ev, "values", X_ev))
+                            y_pred_new = self._binarize(pd.Series(pred_new_raw)).values
+
+                            # Evaluate original model on the exact same eval split
+                            try:
+                                pred_orig_raw = model.predict(X_ev)
+                            except Exception:
+                                pred_orig_raw = model.predict(getattr(X_ev, "values", X_ev))
+                            y_pred_orig = self._binarize(pd.Series(pred_orig_raw)).values
+
+                            # BEFORE metrics on evaluation split
+                            before["accuracy"] = round(float(accuracy_score(y_ev, y_pred_orig)), 4)
+                            before["precision"] = round(float(precision_score(y_ev, y_pred_orig, zero_division=0)), 4)
+                            before["recall"] = round(float(recall_score(y_ev, y_pred_orig, zero_division=0)), 4)
+                            before["f1"] = round(float(f1_score(y_ev, y_pred_orig, zero_division=0)), 4)
+                            b_eod, b_aod, _, _ = self._compute_eod_aod_from_predictions(y_ev, y_pred_orig, s_ev)
+                            before["EOD"] = b_eod
+                            before["AOD"] = b_aod
+                            before["eod_available"] = b_eod is not None
+                            before["aod_available"] = b_aod is not None
+                            before["metrics_mode"] = "model_level"
+                            before["simulation_note"] = None
+
+                            # AFTER metrics on evaluation split
+                            after["accuracy"] = round(float(accuracy_score(y_ev, y_pred_new)), 4)
+                            after["precision"] = round(float(precision_score(y_ev, y_pred_new, zero_division=0)), 4)
+                            after["recall"] = round(float(recall_score(y_ev, y_pred_new, zero_division=0)), 4)
+                            after["f1"] = round(float(f1_score(y_ev, y_pred_new, zero_division=0)), 4)
+                            a_eod, a_aod, _, _ = self._compute_eod_aod_from_predictions(y_ev, y_pred_new, s_ev)
+                            after["EOD"] = a_eod
+                            after["AOD"] = a_aod
+                            after["eod_available"] = a_eod is not None
+                            after["aod_available"] = a_aod is not None
+
+                            # Group positive rates and SPD/DI for new predictions
+                            ev_groups = np.unique(s_ev)
+                            if len(ev_groups) >= 2:
+                                pos_rates = {}
+                                for g in ev_groups:
+                                    m_g = (s_ev == g)
+                                    pos_rates[g] = float((y_pred_new[m_g] == 1).mean()) if m_g.sum() > 0 else 0.0
+                                p_g, u_g = ev_groups[0], ev_groups[1]
+                                after["SPD"] = round(float(pos_rates[u_g] - pos_rates[p_g]), 4)
+                                after["DI"] = round(float(pos_rates[u_g] / pos_rates[p_g]), 4) if pos_rates[p_g] > 1e-9 else None
+
+                            after["metrics_mode"] = "model_level_reweighted"
+                            after["simulation_note"] = None
+
+                            model_retrained = True
+                            n_train_samples = len(train_idx)
+                            n_eval_samples = len(test_idx)
+                            retrained_model = new_est
+                except Exception as exc:
+                    print(f"[Mitigator/Reweigh] Model retraining failed: {exc}")
+                    model_retrained = False
+                    after["simulation_note"] = (
+                        f"Model retraining with sample weights failed ({exc}). "
+                        "Dataset-level reweighted fairness metrics (SPD, DI) are shown."
+                    )
+            else:
+                model_retrained = False
+                after["simulation_note"] = (
+                    f"Uploaded model ({type(model).__name__}) does not support sample_weight in fit(). "
+                    "Performance metrics after retraining are unavailable. Dataset-level reweighted "
+                    "fairness metrics (SPD, DI) are shown."
+                )
+        else:
+            # Dataset-only mode
+            model_retrained = False
+            sw_supported = False
+            rew_note = (
+                "Model-level performance unavailable ? no model uploaded. Dataset-level fairness metrics (SPD, DI) reflect actual outcome distributions after applying reweighing weights. "
+                "Dataset-level fairness metrics (SPD, DI) reflect actual outcome distributions after applying "
+                "reweighing weights."
+            )
+            before["simulation_note"] = rew_note
+            after["simulation_note"] = rew_note
+
+        # ?? Effects ??????????????????????????????????????????????????????????
+        effects = self._compute_effects(before, after)
 
         return {
             "before": before,
@@ -750,22 +975,26 @@ class BiasMitigator:
                 "min": round(float(weights.min()), 3),
                 "max": round(float(weights.max()), 3),
                 "mean": round(float(weights.mean()), 3),
+                "median": round(float(np.median(weights)), 3),
             },
-            "is_simulation": False,  # Reweighing SPD/DI = real dataset metrics
+            "reweighing_group_outcome_weights": reweighing_group_outcome_weights,
+            "model_retrained": model_retrained,
+            "sample_weight_supported": sw_supported,
+            "n_train_samples": n_train_samples,
+            "n_eval_samples": n_eval_samples,
+            "original_model_type": type(model).__name__ if model is not None else None,
+            "mitigated_model_type": type(retrained_model).__name__ if retrained_model is not None else None,
+            "original_model_info": {"type": type(model).__name__} if model is not None else None,
+            "mitigated_model_info": {
+                "type": type(retrained_model).__name__,
+                "n_train_samples": n_train_samples,
+                "n_eval_samples": n_eval_samples,
+            } if model_retrained else None,
+            "is_simulation": False,
             "has_real_model": has_real_model,
-            "simulation_note": (
-                "Dataset-level SPD and DI were computed before and after "
-                "applying reweighing weights to the outcome distributions. "
-                "Performance metrics are from an internal GBM simulation. "
-                + (
-                    "EOD/AOD before are from the real model predictions. "
-                    if real_model_before else
-                    "EOD/AOD require model predictions (not provided)."
-                )
-            ),
+            "simulation_note": after.get("simulation_note") or before.get("simulation_note"),
         }
 
-    # ── Threshold Adjustment ───────────────────────────────────────────────────
 
     def threshold_adjust(
         self,
@@ -1705,3 +1934,5 @@ class BiasMitigator:
             "bias_reduction_pct": bias_reduction_pct,
             "accuracy_retained_pct": accuracy_retained_pct,
         }
+
+

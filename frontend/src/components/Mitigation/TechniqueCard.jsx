@@ -1,16 +1,17 @@
+﻿import { useState } from "react";
 import { motion } from "framer-motion";
-import { ArrowDown, ArrowUp, Info, Trophy, Settings, BarChart2, Zap, AlertCircle, Play, Loader2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Info, Trophy, Settings, BarChart2, Zap, AlertCircle, Play, Loader2, ChevronDown, ChevronUp, CheckCircle2, XCircle } from "lucide-react";
 
 const getVal = (obj, key) => obj?.[key] ?? obj?.[key.toUpperCase()] ?? obj?.[key.toLowerCase()];
 
 // null/undefined means genuinely unavailable — NOT the same as 0.000
-function DeltaRow({ label, before, after }) {
+function DeltaRow({ label, before, after, tooltip }) {
   const isUnavailable = before === null || before === undefined || after === null || after === undefined;
 
   if (isUnavailable) {
     return (
       <tr className="border-b border-white/[0.04] last:border-0">
-        <td className="truncate px-2 py-1.5 min-w-0 font-medium text-textSecondary">{label}</td>
+        <td className="truncate px-2 py-1.5 min-w-0 font-medium text-textSecondary" title={tooltip}>{label}</td>
         <td className="truncate px-2 py-1.5 min-w-0 text-textSecondary/40 text-right text-xs italic">
           {before !== null && before !== undefined ? Number(before).toFixed(3) : "N/A"}
         </td>
@@ -33,7 +34,7 @@ function DeltaRow({ label, before, after }) {
 
   return (
     <tr className="border-b border-white/[0.04] last:border-0">
-      <td className="truncate px-2 py-1.5 min-w-0 font-medium text-textSecondary">{label}</td>
+      <td className="truncate px-2 py-1.5 min-w-0 font-medium text-textSecondary" title={tooltip}>{label}</td>
       <td className="truncate px-2 py-1.5 min-w-0 text-textPrimary text-right">{b.toFixed(3)}</td>
       <td className="truncate px-2 py-1.5 min-w-0 text-textPrimary text-right">{a.toFixed(3)}</td>
       <td className={`truncate px-2 py-1.5 min-w-0 font-medium text-right ${isImprovement ? "text-success" : "text-danger"}`}>
@@ -46,12 +47,12 @@ function DeltaRow({ label, before, after }) {
   );
 }
 
-function MetricCompact({ label, before, after }) {
+function MetricCompact({ label, before, after, tooltip }) {
   const isUnavailable = before === null || before === undefined || after === null || after === undefined;
 
   if (isUnavailable) {
     return (
-      <div>
+      <div title={tooltip}>
         <p className="text-[10px] text-textSecondary uppercase tracking-wider mb-1">{label}</p>
         <div className="flex items-baseline gap-1">
           <span className="text-sm text-textSecondary/40 italic">N/A</span>
@@ -66,7 +67,7 @@ function MetricCompact({ label, before, after }) {
   const isDrop = delta < 0;
 
   return (
-    <div>
+    <div title={tooltip}>
        <p className="text-[10px] text-textSecondary uppercase tracking-wider mb-1">{label}</p>
        <div className="flex items-baseline gap-1.5">
           <span className="text-sm font-semibold text-textPrimary">{a.toFixed(3)}</span>
@@ -78,10 +79,281 @@ function MetricCompact({ label, before, after }) {
   );
 }
 
-export default function TechniqueCard({ 
-  name, 
-  data, 
-  isWinner, 
+// Reweighing transparency explanation panel
+function ReweighExplainer({ data }) {
+  const [open, setOpen] = useState(false);
+  const ws = data?.weights_summary || {};
+  const modelRetrained = data?.model_retrained === true;
+  const swSupported = data?.sample_weight_supported;
+  const originalModelType = data?.original_model_type;
+  const nTrain = data?.n_train_samples;
+  const nEval = data?.n_eval_samples;
+  const after = data?.after || {};
+
+  return (
+    <div className="mt-4 border border-white/[0.06] rounded-lg overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold text-textSecondary uppercase tracking-widest bg-surface/40 hover:bg-surface/70 transition-colors"
+      >
+        <span>What changed? What did not?</span>
+        {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </button>
+
+      {open && (
+        <div className="px-4 py-4 space-y-5 bg-surface/20">
+
+          {/* Process flow */}
+          <div>
+            <p className="text-[10px] font-semibold text-textSecondary uppercase tracking-wider mb-3">How Reweighing Works — Step by Step</p>
+            <div className="space-y-2">
+              {[
+                { step: "1", text: "Count how often each (group, outcome) combination appears in the dataset." },
+                { step: "2", text: "Compute statistical weights: w = P(Group) × P(Outcome) / P(Group, Outcome). Under-represented combinations get a weight > 1; over-represented ones get < 1." },
+                { step: "3", text: modelRetrained
+                    ? `Clone the original model (${originalModelType || "model"}) and refit it on 70% of the data using these sample weights. Evaluate on the remaining 30%.`
+                    : "Apply weights to the dataset outcome distribution to compute the expected fairness metrics without retraining a model." },
+                { step: "4", text: "Measure SPD and DI from the reweighted distribution — and performance from the retrained model (if available)." },
+              ].map(({ step, text }) => (
+                <div key={step} className="flex gap-3 items-start">
+                  <span className="w-5 h-5 rounded-full bg-accent/20 border border-accent/30 flex-shrink-0 flex items-center justify-center text-[9px] font-bold text-accent">{step}</span>
+                  <p className="text-xs text-textSecondary/90 leading-relaxed">{text}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* What changed / What did not */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="bg-success/5 border border-success/15 rounded-lg p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <CheckCircle2 size={13} className="text-success flex-shrink-0" />
+                <p className="text-[10px] font-semibold text-success uppercase tracking-wider">What Changed</p>
+              </div>
+              <ul className="space-y-1">
+                {[
+                  "Statistical outcome distribution (SPD, DI)",
+                  modelRetrained ? `A new version of ${originalModelType || "the model"} was trained with sample weights` : null,
+                  modelRetrained ? `Performance metrics (Acc/F1) evaluated on ${nEval} held-out samples` : null,
+                  modelRetrained ? "EOD and AOD (from retrained model predictions)" : null,
+                ].filter(Boolean).map((item, i) => (
+                  <li key={i} className="text-xs text-success/80 leading-relaxed flex gap-1.5 items-start">
+                    <span className="mt-1 flex-shrink-0">•</span><span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="bg-white/[0.02] border border-white/[0.06] rounded-lg p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <XCircle size={13} className="text-textSecondary flex-shrink-0" />
+                <p className="text-[10px] font-semibold text-textSecondary uppercase tracking-wider">What Did NOT Change</p>
+              </div>
+              <ul className="space-y-1">
+                {[
+                  modelRetrained ? `The original deployed model (${originalModelType || "model"}) — only a clone is retrained` : "The original model — no model was modified",
+                  "The raw input data",
+                  "The model's decision logic at inference time",
+                  "Feature engineering and preprocessing",
+                ].map((item, i) => (
+                  <li key={i} className="text-xs text-textSecondary/70 leading-relaxed flex gap-1.5 items-start">
+                    <span className="mt-1 flex-shrink-0">•</span><span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+
+          {/* Weight summary */}
+          {(ws.min != null) && (
+            <div>
+              <p className="text-[10px] font-semibold text-textSecondary uppercase tracking-wider mb-2">Sample Weight Statistics</p>
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { label: "Min Weight", value: ws.min?.toFixed(3) },
+                  { label: "Mean Weight", value: ws.mean?.toFixed(3) },
+                  { label: "Max Weight", value: ws.max?.toFixed(3) },
+                ].map(({ label, value }) => (
+                  <div key={label} className="bg-surface/40 rounded p-2 text-center">
+                    <p className="text-[9px] text-textSecondary/70">{label}</p>
+                    <p className="text-xs font-semibold text-textPrimary">{value ?? "—"}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[10px] text-textSecondary/50 mt-2">
+                Weights are clipped to [0.1, 10.0]. Weight = 1.0 means unaffected. &gt;1 = upsampled. &lt;1 = downsampled.
+              </p>
+            </div>
+          )}
+
+          {/* Model retraining info */}
+          {originalModelType && (
+            <div className={`rounded-lg p-3 border ${modelRetrained ? "bg-emerald-500/5 border-emerald-500/15" : "bg-amber-500/5 border-amber-500/15"}`}>
+              <p className={`text-[10px] font-semibold uppercase tracking-wider mb-1 ${modelRetrained ? "text-emerald-400" : "text-amber-400"}`}>
+                Model Retraining — {modelRetrained ? "Performed" : "Not Performed"}
+              </p>
+              {modelRetrained ? (
+                <div className="space-y-1">
+                  <p className="text-xs text-emerald-300/80">Original model: <span className="font-semibold">{originalModelType}</span></p>
+                  <p className="text-xs text-emerald-300/80">Training samples used: <span className="font-semibold">{nTrain}</span></p>
+                  <p className="text-xs text-emerald-300/80">Evaluation samples: <span className="font-semibold">{nEval}</span></p>
+                  <p className="text-xs text-emerald-300/60 mt-2">
+                    A fresh clone of the model was fitted with the reweighing sample weights. The original model is unchanged.
+                  </p>
+                </div>
+              ) : (
+                <p className="text-xs text-amber-300/70">
+                  {swSupported === false
+                    ? `${originalModelType} does not support sample_weight in fit(). SPD/DI reflect dataset-level reweighted distributions. Performance metrics are not available for this reason.`
+                    : "Dataset-level reweighing only. Upload a model with sample_weight support to see performance metrics after retraining."
+                  }
+                </p>
+              )}
+            </div>
+          )}
+
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Threshold Adjustment transparency explanation panel
+function ThresholdExplainer({ data }) {
+  const [open, setOpen] = useState(false);
+  const thresholds = data?.thresholds || {};
+  const isSimulation = data?.is_simulation === true;
+  const modelType = data?.model_info?.type || null;
+  const hasThresholds = Object.keys(thresholds).length > 0;
+
+  return (
+    <div className="mt-4 border border-white/[0.06] rounded-lg overflow-hidden">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 text-xs font-semibold text-textSecondary uppercase tracking-widest bg-surface/40 hover:bg-surface/70 transition-colors"
+      >
+        <span>What changed? What did not?</span>
+        {open ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+      </button>
+
+      {open && (
+        <div className="px-4 py-4 space-y-5 bg-surface/20">
+
+          {/* Process flow */}
+          <div>
+            <p className="text-[10px] font-semibold text-textSecondary uppercase tracking-wider mb-3">How Threshold Adjustment Works — Step by Step</p>
+            <div className="space-y-2">
+              {[
+                { step: "1", text: isSimulation ? "An internal GBM model generates probability scores for each sample (because no real model was uploaded)." : "The uploaded model's predict_proba() generates a probability score for each sample." },
+                { step: "2", text: "Samples are grouped by demographic attribute (e.g. Male/Female)." },
+                { step: "3", text: "Per-group decision thresholds are optimised to minimise SPD (the fairness gap). Each group gets its own cut-off instead of a single global 0.5 threshold." },
+                { step: "4", text: "Final predictions are made by comparing each sample's probability to its group's threshold. SPD, DI, EOD, AOD and performance are measured." },
+              ].map(({ step, text }) => (
+                <div key={step} className="flex gap-3 items-start">
+                  <span className="w-5 h-5 rounded-full bg-violet-500/20 border border-violet-500/30 flex-shrink-0 flex items-center justify-center text-[9px] font-bold text-violet-400">{step}</span>
+                  <p className="text-xs text-textSecondary/90 leading-relaxed">{text}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* What changed / What did not */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="bg-success/5 border border-success/15 rounded-lg p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <CheckCircle2 size={13} className="text-success flex-shrink-0" />
+                <p className="text-[10px] font-semibold text-success uppercase tracking-wider">What Changed</p>
+              </div>
+              <ul className="space-y-1">
+                {[
+                  "The decision threshold — now different per group",
+                  "Which samples get a positive prediction",
+                  "SPD, DI, EOD, AOD (from new group-specific decisions)",
+                  "Accuracy, Precision, Recall, F1 (re-evaluated with new thresholds)",
+                ].map((item, i) => (
+                  <li key={i} className="text-xs text-success/80 leading-relaxed flex gap-1.5 items-start">
+                    <span className="mt-1 flex-shrink-0">•</span><span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div className="bg-white/[0.02] border border-white/[0.06] rounded-lg p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <XCircle size={13} className="text-textSecondary flex-shrink-0" />
+                <p className="text-[10px] font-semibold text-textSecondary uppercase tracking-wider">What Did NOT Change</p>
+              </div>
+              <ul className="space-y-1">
+                {[
+                  "The model's internal weights and parameters",
+                  "The model's probability scores (probabilities are unchanged)",
+                  "The training data or feature engineering",
+                  "The model's architecture",
+                ].map((item, i) => (
+                  <li key={i} className="text-xs text-textSecondary/70 leading-relaxed flex gap-1.5 items-start">
+                    <span className="mt-1 flex-shrink-0">•</span><span>{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+
+          {/* Per-group thresholds */}
+          {hasThresholds && (
+            <div>
+              <p className="text-[10px] font-semibold text-textSecondary uppercase tracking-wider mb-2">Per-Group Decision Thresholds</p>
+              <div className="space-y-2">
+                {Object.entries(thresholds).map(([group, threshold]) => (
+                  <div key={group} className="flex items-center justify-between bg-surface/40 rounded px-3 py-2">
+                    <div>
+                      <p className="text-xs font-medium text-textPrimary">{group}</p>
+                      <p className="text-[10px] text-textSecondary/60">Group-specific cutoff</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs text-textSecondary/50 line-through">0.500</p>
+                      <p className="text-sm font-semibold text-violet-300">{Number(threshold).toFixed(3)}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[10px] text-textSecondary/50 mt-2">
+                Default threshold was 0.5. Adjusted thresholds equalise positive decision rates across groups.
+              </p>
+            </div>
+          )}
+
+          {/* Simulation note */}
+          {isSimulation && (
+            <div className="bg-amber-500/5 border border-amber-500/15 rounded-lg p-3">
+              <p className="text-[10px] font-semibold text-amber-400 uppercase tracking-wider mb-1">Using Internal Simulation</p>
+              <p className="text-xs text-amber-300/70">
+                No real model was uploaded. An internal GBM simulation generates probability scores to demonstrate threshold adjustment.
+                Upload a real sklearn model with predict_proba() to see results from your actual model.
+              </p>
+            </div>
+          )}
+
+        </div>
+      )}
+    </div>
+  );
+}
+
+const METRIC_TOOLTIPS = {
+  SPD: "Statistical Parity Difference: positive outcome rate (unpriv) − (priv). 0 = fair. |>0.1| = bias.",
+  DI: "Disparate Impact: rate(unpriv) / rate(priv). Below 0.8 fails the legal 80% rule.",
+  EOD: "Equal Opportunity Difference: True Positive Rate gap between groups. 0 = fair.",
+  AOD: "Average Odds Difference: average of TPR and FPR gaps between groups. 0 = fair.",
+  accuracy: "Fraction of all predictions that are correct.",
+  precision: "Of all positive predictions, what fraction were actually positive.",
+  recall: "Of all actual positives, what fraction were correctly identified.",
+  f1: "Harmonic mean of Precision and Recall. Balances both error types.",
+};
+
+export default function TechniqueCard({
+  name,
+  data,
+  isWinner,
   winnerReason,
   onRunSimulation,
   isSimulating = false,
@@ -98,79 +370,74 @@ export default function TechniqueCard({
   const effects = data.effects || {};
   const isSimulation = data.is_simulation === true;
   const simulationNote = data.simulation_note;
+  const isModelRequired = data.model_required === true;
   const hasRealModel = data.has_real_model === true;
-  const isModelRequired = data.status === "model_required" || data.model_required === true;
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`relative glass-card p-6 border ${
-        isWinner ? "border-accent/50 shadow-[0_0_15px_rgba(20,184,166,0.15)]" : "border-white/[0.06]"
-      } transition-all duration-300`}
+      className={`glass-card p-5 border ${
+        isWinner
+          ? "border-accent/30 shadow-lg shadow-accent/5"
+          : "border-white/[0.06]"
+      }`}
     >
       {/* Header */}
-      <div className="flex items-start justify-between mb-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <h3 className={`text-lg font-bold ${isWinner ? "text-accent" : "text-textPrimary"}`}>
-              {title}
-            </h3>
-            {isModelRequired && (
-              <span className="px-2 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-amber-500/15 border border-amber-500/25 text-amber-300 rounded">
-                Model Required
-              </span>
-            )}
-            {isSimulation && !isModelRequired && (
-              <span className="px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider bg-amber-500/15 border border-amber-500/25 text-amber-400 rounded">
-                Simulation
-              </span>
+      <div className="flex items-start justify-between gap-3 mb-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className={`w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 ${
+            name === "reweigh" ? "bg-accent/15" : "bg-violet-500/15"
+          }`}>
+            {name === "reweigh" ? (
+              <Settings size={16} className="text-accent" />
+            ) : (
+              <Zap size={16} className="text-violet-400" />
             )}
           </div>
-          <p className="text-xs text-textSecondary mt-1 max-w-[250px]">{desc}</p>
+          <div className="min-w-0">
+            <h3 className="font-semibold text-textPrimary text-sm truncate">{title}</h3>
+            <p className="text-xs text-textSecondary truncate">{desc}</p>
+          </div>
         </div>
+
+        {isWinner && (
+          <div className="flex-shrink-0 flex items-center gap-1.5 bg-accent/15 border border-accent/25 rounded-full px-3 py-1">
+            <Trophy size={12} className="text-accent" />
+            <span className="text-xs font-semibold text-accent">Recommended</span>
+          </div>
+        )}
       </div>
 
+      {/* Winner reason */}
       {isWinner && winnerReason && (
-        <div className="mb-6 bg-accent/10 border border-accent/20 rounded-lg p-4 text-accent shadow-sm">
-          <div className="flex items-center gap-2 mb-1.5">
-            <Trophy size={16} className="flex-shrink-0" />
-            <span className="font-bold text-sm">Why this is recommended:</span>
-          </div>
-          <p className="text-sm leading-relaxed opacity-90">{winnerReason}</p>
+        <div className="mb-4 flex items-start gap-2 bg-accent/5 border border-accent/15 rounded-lg px-3 py-2">
+          <Info size={13} className="text-accent/70 flex-shrink-0 mt-0.5" />
+          <p className="text-xs text-accent/80 leading-relaxed">{winnerReason}</p>
         </div>
       )}
 
-      {/* Mode 1: Model Required Notice & Optional Simulation */}
+      {/* Model required notice */}
       {isModelRequired && (
-        <div className="space-y-4 mb-6">
-          <div className="bg-amber-500/10 border border-amber-500/25 rounded-xl p-4">
-            <div className="flex items-center gap-2 mb-1">
-              <AlertCircle size={16} className="text-amber-400 flex-shrink-0" />
-              <span className="font-semibold text-sm text-amber-300">Model Required</span>
-            </div>
-            <p className="text-xs text-amber-200/80 leading-relaxed">
-              Upload a compatible trained model to perform real threshold adjustment.
+        <div className="mb-4 flex flex-col gap-3 bg-white/[0.03] border border-white/10 rounded-lg p-4">
+          <div className="flex items-start gap-2">
+            <AlertCircle size={14} className="text-textSecondary/70 flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-textSecondary/80 leading-relaxed">
+              Threshold adjustment requires probability scores from a trained model.
             </p>
           </div>
-
-          <div className="bg-surface/50 border border-white/10 rounded-xl p-4">
-            <p className="text-xs text-textSecondary leading-relaxed mb-3">
-              No trained model uploaded. You can optionally run a simulation to demonstrate how threshold adjustment works. Simulation results are illustrative and are NOT results from a real model.
-            </p>
+          {onRunSimulation && (
             <button
-              type="button"
               onClick={onRunSimulation}
               disabled={isSimulating}
-              className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-semibold bg-accent/15 border border-accent/30 text-accent hover:bg-accent/25 transition-colors rounded-lg disabled:opacity-50 cursor-pointer"
+              className="flex items-center gap-2 text-xs font-medium text-accent border border-accent/30 rounded-lg px-3 py-2 hover:bg-accent/10 transition-colors disabled:opacity-50"
             >
-              {isSimulating ? <Loader2 size={14} className="animate-spin text-accent" /> : <Play size={14} className="text-accent" />}
-              <span>{isSimulating ? "Running Simulation…" : "Run Simulation"}</span>
+              {isSimulating
+                ? <><Loader2 size={13} className="animate-spin" /> Running simulation…</>
+                : <><Play size={13} /> Run with internal simulation</>
+              }
             </button>
-            <p className="text-[10px] text-textSecondary/60 mt-2">
-              Simulation is optional and illustrative only.
-            </p>
-          </div>
+          )}
         </div>
       )}
 
@@ -221,6 +488,7 @@ export default function TechniqueCard({
                 <DeltaRow
                   key={m}
                   label={m}
+                  tooltip={METRIC_TOOLTIPS[m]}
                   before={getVal(before, m)}
                   after={isModelRequired ? null : getVal(after, m)}
                 />
@@ -243,7 +511,11 @@ export default function TechniqueCard({
         ) : hasRealModel ? (
           <div className="flex items-start gap-1.5 mb-3 bg-emerald-500/5 border border-emerald-500/15 rounded px-2 py-1.5">
             <Zap size={11} className="text-emerald-400/70 flex-shrink-0 mt-0.5" />
-            <p className="text-[10px] text-emerald-300/70 leading-relaxed">Real model performance evaluated directly on uploaded model</p>
+            <p className="text-[10px] text-emerald-300/70 leading-relaxed">
+              {name === "reweigh" && data.model_retrained
+                ? "Real model retrained with sample weights. Performance evaluated on held-out test set."
+                : "Real model performance evaluated directly on uploaded model."}
+            </p>
           </div>
         ) : (
           <div className="flex items-start gap-1.5 mb-3 bg-white/[0.03] border border-white/10 rounded px-2 py-1.5">
@@ -252,25 +524,29 @@ export default function TechniqueCard({
           </div>
         )}
         <div className="grid grid-cols-4 gap-2">
-          <MetricCompact 
-            label="Acc" 
-            before={isModelRequired ? null : getVal(before, "accuracy")} 
-            after={isModelRequired ? null : getVal(after, "accuracy")} 
+          <MetricCompact
+            label="Acc"
+            tooltip={METRIC_TOOLTIPS.accuracy}
+            before={isModelRequired ? null : getVal(before, "accuracy")}
+            after={isModelRequired ? null : getVal(after, "accuracy")}
           />
-          <MetricCompact 
-            label="Pre" 
-            before={isModelRequired ? null : getVal(before, "precision")} 
-            after={isModelRequired ? null : getVal(after, "precision")} 
+          <MetricCompact
+            label="Pre"
+            tooltip={METRIC_TOOLTIPS.precision}
+            before={isModelRequired ? null : getVal(before, "precision")}
+            after={isModelRequired ? null : getVal(after, "precision")}
           />
-          <MetricCompact 
-            label="Rec" 
-            before={isModelRequired ? null : getVal(before, "recall")} 
-            after={isModelRequired ? null : getVal(after, "recall")} 
+          <MetricCompact
+            label="Rec"
+            tooltip={METRIC_TOOLTIPS.recall}
+            before={isModelRequired ? null : getVal(before, "recall")}
+            after={isModelRequired ? null : getVal(after, "recall")}
           />
-          <MetricCompact 
-            label="F1"  
-            before={isModelRequired ? null : getVal(before, "f1")} 
-            after={isModelRequired ? null : getVal(after, "f1")} 
+          <MetricCompact
+            label="F1"
+            tooltip={METRIC_TOOLTIPS.f1}
+            before={isModelRequired ? null : getVal(before, "f1")}
+            after={isModelRequired ? null : getVal(after, "f1")}
           />
         </div>
       </div>
@@ -338,6 +614,13 @@ export default function TechniqueCard({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Technique-specific explainer */}
+      {!isModelRequired && (
+        name === "reweigh"
+          ? <ReweighExplainer data={data} />
+          : <ThresholdExplainer data={data} />
       )}
     </motion.div>
   );
