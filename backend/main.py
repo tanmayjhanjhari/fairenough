@@ -3,6 +3,17 @@ FairEnough Backend — FastAPI Application Entry Point
 """
 
 import os
+import sys
+
+# Force unbuffered output so logs appear in real-time on Render / Docker
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
@@ -23,11 +34,17 @@ if os.path.exists(_backend_env):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    port = os.getenv("PORT", "8000")
+    print(f"[Startup] Starting FairEnough API (PORT={port})...", flush=True)
+
     # Initialise in-memory session store on startup
     app.state.sessions = {}
-    await connect_db()
+    try:
+        await connect_db()
+    except Exception as e:
+        print(f"[Startup] Non-fatal database initialization warning: {e}", flush=True)
 
-    # Ensure data directory always exists (Railway, Docker, local dev)
+    # Ensure data directory always exists (Railway, Render, Docker, local dev)
     import os as _os
     _os.makedirs(_os.path.join(_os.getcwd(), 'data'), exist_ok=True)
     _os.makedirs('data', exist_ok=True)
@@ -37,17 +54,21 @@ async def lifespan(app: FastAPI):
         from services.bias_pattern_model import get_bias_pattern_classifier, get_stats_from_file
         clf   = get_bias_pattern_classifier()
         stats = get_stats_from_file()
-        print(f"[Startup] BiasPatternClassifier: {stats['total_examples']} examples")
-        print(f"[Startup] File: {stats['file_path']}")
-        print(f"[Startup] File exists: {stats['file_exists']}")
+        print(f"[Startup] BiasPatternClassifier: {stats['total_examples']} examples", flush=True)
+        print(f"[Startup] File: {stats['file_path']}", flush=True)
+        print(f"[Startup] File exists: {stats['file_exists']}", flush=True)
         if stats['total_examples'] < 20:
             print("[Startup] WARNING: Less than 20 training examples. "
-                  "Run: python backend/scripts/train_classifier.py")
+                  "Run: python backend/scripts/train_classifier.py", flush=True)
     except Exception as e:
-        print(f"[Startup] BiasPatternClassifier error: {e}")
+        print(f"[Startup] BiasPatternClassifier error: {e}", flush=True)
 
+    print("[Startup] Ready to accept incoming connections.", flush=True)
     yield
-    await disconnect_db()
+    try:
+        await disconnect_db()
+    except Exception:
+        pass
 
 
 async def global_exception_handler(request: Request, exc: Exception):
@@ -78,7 +99,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # ── Exception Handlers ──────────────────────────────────────────────────
+    # ── Exception Handlers ───────────────────────────────────────────────────
     app.add_exception_handler(Exception, global_exception_handler)
     app.add_exception_handler(StarletteHTTPException, http_exception_handler)
 
@@ -115,7 +136,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(reports_router.router)
 
-    # ── Health check ─────────────────────────────────────────────────────────
+    # ── Health check ────────────────────────────────────────────────────────
     @app.get("/api/health", tags=["Health"])
     async def health() -> dict:
         return {"status": "ok"}
@@ -124,3 +145,8 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.getenv("PORT", 8000))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, log_level="info")

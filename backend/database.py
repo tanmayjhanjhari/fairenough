@@ -1,5 +1,6 @@
 import os
 import re
+import asyncio
 import logging
 from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -27,36 +28,47 @@ db = None
 async def connect_db():
     global client, db
     if not MONGODB_URL:
-        raise RuntimeError(
-            "FATAL: MONGODB_URL environment variable is required. "
-            "Please set MONGODB_URL in your hosting environment variables."
-        )
+        print("[Database] WARNING: MONGODB_URL environment variable is not set. Running in in-memory session mode.")
+        client = None
+        db = None
+        return
 
-    print(f"[Database] Connecting to MongoDB Atlas...")
-    client = AsyncIOMotorClient(MONGODB_URL, serverSelectionTimeoutMS=10000)
-    
-    # Verify server connectivity
-    await client.admin.command('ping')
-    
-    # Use 'byus' database directly
-    db = client.byus
-    
-    # Create required indexes
-    await db.users.create_index("email", unique=True)
-    await db.reports.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
-    await db.reports.create_index("session_id", unique=True)
-    print("[Database] Connected successfully to MongoDB Atlas (database: byus)")
+    print("[Database] Connecting to MongoDB Atlas...")
+    try:
+        client = AsyncIOMotorClient(MONGODB_URL, serverSelectionTimeoutMS=5000)
+        # Verify server connectivity with strict 5s timeout to prevent deployment hang
+        await asyncio.wait_for(client.admin.command('ping'), timeout=5.0)
+        
+        # Resolve database
+        try:
+            default_db = client.get_default_database()
+            db = default_db if default_db is not None else client.byus
+        except Exception:
+            db = client.byus
+        
+        # Create required indexes
+        await db.users.create_index("email", unique=True)
+        await db.reports.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
+        await db.reports.create_index("session_id", unique=True)
+        print("[Database] Connected successfully to MongoDB Atlas")
+    except Exception as exc:
+        print(f"[Database] WARNING: Could not connect to MongoDB Atlas ({exc}). Running in in-memory session mode.")
+        client = None
+        db = None
 
 async def disconnect_db():
     global client
     if client:
-        client.close()
-        print("[Database] Disconnected from MongoDB")
+        try:
+            client.close()
+            print("[Database] Disconnected from MongoDB")
+        except Exception:
+            pass
 
 def get_db():
     if db is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Database connection is not available."
+            detail="Database connection is not available. Please verify MongoDB Atlas connection."
         )
     return db
