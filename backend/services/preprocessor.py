@@ -19,6 +19,9 @@ class DataPreprocessor:
             "duplicates_removed": 0,
             "dtype_conversions": {},
             "columns_renamed": {},
+            "column_mapping": {},
+            "normalized_to_original": {},
+            "original_columns": [],
             "uci_adult_detected": False,
             "warnings": []
         }
@@ -59,8 +62,11 @@ class DataPreprocessor:
         report["dtype_conversions"] = dtype_conversions
 
         # Step 7: Column Name Normalization
-        df, renamed = self._normalize_columns(df)
+        df, renamed, column_mapping, normalized_to_orig = self._normalize_columns(df)
         report["columns_renamed"] = renamed
+        report["column_mapping"] = column_mapping
+        report["normalized_to_original"] = normalized_to_orig
+        report["original_columns"] = list(column_mapping.keys())
 
         # Step 8: UCI Adult Specific Fix
         df, uci_detected = self._uci_adult_fix(df, filename)
@@ -244,20 +250,33 @@ class DataPreprocessor:
                 
         return df, conversions
 
-    def _normalize_columns(self, df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    def _normalize_columns(self, df: pd.DataFrame) -> tuple[pd.DataFrame, dict, dict, dict]:
         renamed = {}
+        column_mapping = {}
+        normalized_to_original = {}
         new_cols = []
-        for col in df.columns:
+        original_cols = list(df.columns)
+        
+        for col in original_cols:
             new_col = str(col).lower()
             new_col = re.sub(r'[\s\-]+', '_', new_col)
             new_col = re.sub(r'[^a-z0-9_]', '', new_col)
             
+            # Detect collisions where distinct original columns map to the same normalized name
+            if new_col in normalized_to_original and normalized_to_original[new_col] != col:
+                raise ValueError(
+                    f"Column name ambiguity detected: columns '{normalized_to_original[new_col]}' "
+                    f"and '{col}' both normalize to '{new_col}'."
+                )
+                
+            column_mapping[col] = new_col
+            normalized_to_original[new_col] = col
             if new_col != col:
                 renamed[col] = new_col
             new_cols.append(new_col)
             
         df.columns = new_cols
-        return df, renamed
+        return df, renamed, column_mapping, normalized_to_original
 
     def _uci_adult_fix(self, df: pd.DataFrame, filename: str) -> tuple[pd.DataFrame, bool]:
         adult_keywords = ['workclass', 'fnlwgt', 'education_num', 'marital_status', 'occupation']

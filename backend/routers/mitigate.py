@@ -136,6 +136,7 @@ async def mitigate(
     print(f"[Mitigate] df_with_predictions available: {df_with_pred is not None}")
 
     allow_simulation = bool(body.simulate_threshold)
+    column_mapping = session.get("column_mapping")
 
     try:
         mitigation_results = mitigator.run_both(
@@ -149,6 +150,12 @@ async def mitigate(
             model=real_model,
             df_with_pred=df_with_pred,
             allow_simulation=allow_simulation,
+            column_mapping=column_mapping,
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
         )
     except Exception as exc:
         raise HTTPException(

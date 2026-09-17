@@ -99,6 +99,9 @@ async def upload_csv(
         "filename": file.filename or "upload.csv",
         "row_count": row_count,
         "preprocessing_report": report,
+        "column_mapping": report.get("column_mapping", {}),
+        "normalized_to_original": report.get("normalized_to_original", {}),
+        "original_columns": report.get("original_columns", []),
     }
     if report.get("detected_scenario"):
         session_dict["scenario"] = report["detected_scenario"]
@@ -211,6 +214,9 @@ async def load_sample_dataset(request: Request, dataset_id: str):
         "filename": dataset["filename"],
         "row_count": row_count,
         "preprocessing_report": report,
+        "column_mapping": report.get("column_mapping", {}),
+        "normalized_to_original": report.get("normalized_to_original", {}),
+        "original_columns": report.get("original_columns", []),
     }
     if report.get("detected_scenario"):
         session_dict["scenario"] = report["detected_scenario"]

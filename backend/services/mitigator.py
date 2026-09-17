@@ -332,61 +332,24 @@ class BiasMitigator:
         model: Any,
         target_col: str,
         sensitive_attr: str,
-    ) -> np.ndarray | None:
+        column_mapping: dict[str, str] | None = None,
+    ) -> pd.DataFrame | None:
         """
         Build the feature matrix as the real model expects it.
 
-        - If the model has feature_names_in_, use those columns (encoding
-          categoricals the same way the analyze router does).
-        - Otherwise fall back to all numeric columns except target.
-
-        Returns X array or None on failure.
+        Uses build_model_feature_matrix from services.feature_resolver to
+        resolve case-differences, mappings, and feature names.
+        Returns X DataFrame or None on failure.
         """
         try:
-            raw_features = getattr(model, "feature_names_in_", None)
-            feature_names = list(raw_features) if raw_features is not None else []
-
-            if feature_names:
-                missing = [c for c in feature_names if c not in df.columns]
-                if missing:
-                    print(
-                        f"[Mitigator] Model expects features missing from df: {missing}"
-                    )
-                    return None
-                X = df[feature_names].copy()
-            else:
-                # Fallback: all numeric except target and internal columns
-                internal_cols = {
-                    target_col,
-                    "__y__",
-                    "__predictions__",
-                    "__sens_binned__",
-                    "__weight__",
-                    "__target__",
-                    "__sens__",
-                    "__truth__",
-                    "__s__",
-                    "__y_tmp__",
-                }
-                cols_to_drop = [c for c in internal_cols if c in df.columns]
-                X = df.select_dtypes(include="number").drop(
-                    columns=cols_to_drop,
-                    errors="ignore",
-                ).copy()
-
-                expected_n = getattr(model, "n_features_in_", None)
-                if expected_n is not None and X.shape[1] > expected_n:
-                    if sensitive_attr in X.columns and (X.shape[1] - 1) == expected_n:
-                        X = X.drop(columns=[sensitive_attr])
-
-            # Encode any object/category columns
-            for c in X.columns:
-                if X[c].dtype == "object" or X[c].dtype.name in ("category", "bool"):
-                    try:
-                        X[c] = X[c].astype(float)
-                    except ValueError:
-                        X[c] = LabelEncoder().fit_transform(X[c].astype(str))
-            X = X.fillna(0)
+            from services.feature_resolver import build_model_feature_matrix
+            X = build_model_feature_matrix(
+                model=model,
+                df=df,
+                target_col=target_col,
+                sensitive_attr=sensitive_attr,
+                column_mapping=column_mapping,
+            )
             return X
         except Exception as exc:
             print(f"[Mitigator] _prepare_features_for_model failed: {exc}")
@@ -408,6 +371,7 @@ class BiasMitigator:
         model: Any = None,
         df_with_pred: pd.DataFrame | None = None,
         allow_simulation: bool = True,
+        column_mapping: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """
         Run both mitigation strategies and return a unified comparison.
@@ -444,6 +408,7 @@ class BiasMitigator:
             model=model,
             df_with_pred=df_with_pred,
             allow_simulation=allow_simulation,
+            column_mapping=column_mapping,
         )
 
         if thr.get("model_required") or not thr.get("after"):
@@ -794,6 +759,7 @@ class BiasMitigator:
         max_pos_rate: float = 0.95,
         min_samples_per_class: int = 2,
         allow_simulation: bool = True,
+        column_mapping: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """
         Threshold adjustment mitigation.
@@ -886,6 +852,7 @@ class BiasMitigator:
                 min_pos_rate=min_pos_rate,
                 max_pos_rate=max_pos_rate,
                 min_samples_per_class=min_samples_per_class,
+                column_mapping=column_mapping,
             )
             res["has_real_model"] = True
             return res
@@ -950,6 +917,7 @@ class BiasMitigator:
         min_pos_rate: float = 0.05,
         max_pos_rate: float = 0.95,
         min_samples_per_class: int = 2,
+        column_mapping: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """
         Threshold adjustment using the REAL model's predict_proba.
@@ -969,7 +937,7 @@ class BiasMitigator:
             valid_mask = df_aligned[[target_col, sensitive_attr]].notna().all(axis=1)
             df_aligned = df_aligned[valid_mask].reset_index(drop=True)
             X_aligned = self._prepare_features_for_model(
-                df_aligned, model, target_col, sensitive_attr
+                df_aligned, model, target_col, sensitive_attr, column_mapping=column_mapping
             )
             if X_aligned is None:
                 raise ValueError("Could not build feature matrix for the real model")

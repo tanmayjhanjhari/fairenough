@@ -1,3 +1,4 @@
+from services.feature_resolver import build_model_feature_matrix
 """
 FairEnough — Analyze Router
 
@@ -119,43 +120,23 @@ async def analyze(
 
     if model_session is not None and "model" in model_session:
         model = model_session["model"]
-        feature_names: list[str] | None = getattr(model, "feature_names_in_", None)
+        column_mapping = session.get("column_mapping")
 
-        if feature_names is not None:
-            feature_cols = list(feature_names)
-        else:
-            # Fallback: use all numeric columns excluding the target
-            feature_cols = [
-                c for c in df.select_dtypes(include="number").columns
-                if c != body.target_col
-            ]
-
-        # Ensure all feature columns exist
-        missing_features = [c for c in feature_cols if c not in df.columns]
-        if missing_features:
+        try:
+            X = build_model_feature_matrix(
+                model=model,
+                df=df,
+                target_col=body.target_col,
+                sensitive_attr=body.sensitive_attrs[0] if body.sensitive_attrs else None,
+                column_mapping=column_mapping,
+            )
+        except ValueError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    f"Model expects features {missing_features} "
-                    "that are not present in the uploaded dataset."
-                ),
+                detail=str(exc),
             )
 
         try:
-            X = df[feature_cols].copy()
-            
-            # Auto-encode any string/categorical columns to prevent "could not convert string to float" errors
-            from sklearn.preprocessing import LabelEncoder
-            for c in X.columns:
-                if X[c].dtype == 'object' or X[c].dtype.name == 'category' or X[c].dtype == 'bool':
-                    try:
-                        # Try to cast to float first in case it's just numeric strings
-                        X[c] = X[c].astype(float)
-                    except ValueError:
-                        # Fallback to label encoding (alphabetical)
-                        X[c] = LabelEncoder().fit_transform(X[c].astype(str))
-
-            X = X.fillna(0)
             predictions = model.predict(X)
             df["__predictions__"] = predictions
             use_predictions = True
