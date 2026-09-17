@@ -400,6 +400,13 @@ Open `http://localhost:5173` in your browser.
 
 ---
 
-## License
+## Author
+Tanmay Jhanjhari
 
-Distributed under the MIT License. See `LICENSE` for details.
+GitHub: @tanmayjhanjhari
+Repository: https://github.com/tanmayjhanjhari/ifairenough
+
+---
+
+📄 License
+This project is open source and available under the MIT License.
