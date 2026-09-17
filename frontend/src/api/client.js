@@ -52,7 +52,7 @@ client.interceptors.response.use(
           iconTheme: { primary: "#EF4444", secondary: "#F1F5F9" },
         })
       }
-    } else if (error?.response?.status !== 404) {
+    } else {
       toast.error(msg, {
         duration: 5000,
         style: {

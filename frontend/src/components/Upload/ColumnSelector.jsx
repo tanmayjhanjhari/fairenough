@@ -49,6 +49,12 @@ export default function ColumnSelector() {
     if (preprocessingReport?.uci_adult_detected && columns.includes("income_binary")) {
       return "income_binary";
     }
+    if (store.targetCol && columns.includes(store.targetCol)) {
+      return store.targetCol;
+    }
+    const commonTargets = ["risk", "target", "label", "outcome", "class", "default", "churn", "approved", "loan_status", "income", "credit_risk"];
+    const found = columns.find(c => commonTargets.includes(c.toLowerCase()));
+    if (found) return found;
     return "";
   });
 
@@ -69,6 +75,31 @@ export default function ColumnSelector() {
   });
   const [scenarioOverride, setScenarioOverride] = useState(false);
   const [analyzeLoading,  setAnalyzeLoading]  = useState(false);
+
+  useEffect(() => {
+    if (!targetCol && columns.length > 0) {
+      if (preprocessingReport?.uci_adult_detected && columns.includes("income_binary")) {
+        setTargetCol("income_binary");
+        return;
+      }
+      if (store.targetCol && columns.includes(store.targetCol)) {
+        setTargetCol(store.targetCol);
+        return;
+      }
+      const commonTargets = ["risk", "target", "label", "outcome", "class", "default", "churn", "approved", "loan_status", "income", "credit_risk"];
+      const found = columns.find(c => commonTargets.includes(c.toLowerCase()));
+      if (found) {
+        setTargetCol(found);
+      }
+    }
+  }, [columns, preprocessingReport, store.targetCol, targetCol]);
+
+  useEffect(() => {
+    if (sensitiveAttrs.length === 0 && store.suggestedSensitive?.length > 0) {
+      const filtered = store.suggestedSensitive.filter(c => c !== targetCol);
+      if (filtered.length > 0) setSensitiveAttrs(filtered);
+    }
+  }, [store.suggestedSensitive, targetCol, sensitiveAttrs.length]);
 
   useEffect(() => {
     if (store.scenario && !scenarioData) {
@@ -99,6 +130,28 @@ export default function ColumnSelector() {
 
   // ── Run analysis ─────────────────────────────────────────────────────────
   const handleAnalyze = async () => {
+    if (!sessionId) {
+      toast.error("Please upload a dataset first.", {
+        style: { background: "#1E293B", color: "#F1F5F9", border: "1px solid rgba(239,68,68,0.4)" },
+        iconTheme: { primary: "#EF4444", secondary: "#F1F5F9" },
+      });
+      return;
+    }
+    if (!targetCol) {
+      toast.error("Please select a target variable first.", {
+        style: { background: "#1E293B", color: "#F1F5F9", border: "1px solid rgba(245,158,11,0.4)" },
+        iconTheme: { primary: "#F59E0B", secondary: "#F1F5F9" },
+      });
+      return;
+    }
+    if (!sensitiveAttrs || sensitiveAttrs.length === 0) {
+      toast.error("Please select at least one sensitive attribute.", {
+        style: { background: "#1E293B", color: "#F1F5F9", border: "1px solid rgba(245,158,11,0.4)" },
+        iconTheme: { primary: "#F59E0B", secondary: "#F1F5F9" },
+      });
+      return;
+    }
+
     setAnalyzeLoading(true);
     setLoading(true);
     try {
@@ -122,8 +175,20 @@ export default function ColumnSelector() {
       setSensitive(sensitiveAttrs);
       setStep(2);
       navigate("/results");
-    } catch {
-      /* handled by interceptor */
+    } catch (err) {
+      console.error("[RunBiasAnalysis] Error:", err);
+      const errMsg = err?.response?.data?.detail || err?.response?.data?.message || err?.message || "Analysis failed. Please check backend.";
+      toast.error(errMsg, {
+        style: { background: "#1E293B", color: "#F1F5F9", border: "1px solid rgba(239,68,68,0.4)" },
+        iconTheme: { primary: "#EF4444", secondary: "#F1F5F9" },
+      });
+      if (err?.response?.status === 404) {
+        toast.error("Session expired or missing. Please re-upload your dataset.", {
+          duration: 6000,
+          style: { background: "#1E293B", color: "#F1F5F9", border: "1px solid rgba(239,68,68,0.4)" },
+          iconTheme: { primary: "#EF4444", secondary: "#F1F5F9" },
+        });
+      }
     } finally {
       setAnalyzeLoading(false);
       setLoading(false);
@@ -329,7 +394,7 @@ export default function ColumnSelector() {
       <div className="pt-2">
         <motion.button
           onClick={handleAnalyze}
-          disabled={!canAnalyze}
+          disabled={analyzeLoading}
           whileHover={canAnalyze ? { scale: 1.02 } : {}}
           whileTap={canAnalyze   ? { scale: 0.97 } : {}}
           className="btn-primary w-full flex items-center justify-center gap-2 py-3 text-base"
