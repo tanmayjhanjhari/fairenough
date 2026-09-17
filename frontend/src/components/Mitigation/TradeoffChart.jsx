@@ -92,7 +92,7 @@ export default function TradeoffChart({ mitigation }) {
     <div className="w-full">
       <div className="h-80 w-full relative">
         <ResponsiveContainer width="100%" height="100%">
-          <ScatterChart margin={{ top: 20, right: 30, left: -20, bottom: 30 }}>
+          <ScatterChart margin={{ top: 25, right: 35, left: 35, bottom: 45 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.1)" />
 
             {/* X-Axis: Bias Reduction */}
@@ -104,7 +104,7 @@ export default function TradeoffChart({ mitigation }) {
               stroke="#94A3B8"
               fontSize={12}
               tickFormatter={(v) => `${v}%`}
-              label={{ value: "Bias Reduction (%)\u00a0\u2192", position: "bottom", fill: "#94A3B8", fontSize: 12, offset: 10 }}
+              label={{ value: "Bias Reduction (%) →", position: "insideBottom", fill: "#94A3B8", fontSize: 12, offset: -15, style: { textAnchor: "middle" } }}
             />
 
             {/* Y-Axis: Accuracy Retained */}
@@ -112,11 +112,12 @@ export default function TradeoffChart({ mitigation }) {
               type="number"
               dataKey="accRet"
               name="Accuracy Retained"
-              domain={[80, 105]}
+              width={65}
+              domain={[50, 105]}
               stroke="#94A3B8"
               fontSize={12}
               tickFormatter={(v) => `${v}%`}
-              label={{ value: "Accuracy Retained (%)\u00a0\u2191", angle: -90, position: "insideLeft", fill: "#94A3B8", fontSize: 11, dx: 14 }}
+              label={{ value: "Accuracy Retained (%) ↑", angle: -90, position: "insideLeft", fill: "#94A3B8", fontSize: 12, style: { textAnchor: "middle" }, dy: 10 }}
             />
 
             {/* Sweet Spot Overlay */}

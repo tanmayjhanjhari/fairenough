@@ -71,12 +71,32 @@ def _ensure_estimator_compatibility(estimator: Any) -> None:
     """
     Recursively ensure unpickled scikit-learn estimators (including Pipelines,
     VotingClassifiers, and StackingClassifiers) have required attributes
-    across sklearn version differences (such as multi_class for LogisticRegression).
+    across sklearn version differences.
+
+    Handles:
+    - penalty='deprecated' (sklearn 1.8+ -> 1.4.x): resets to 'l2'
+    - l1_ratio not None when penalty != 'elasticnet': resets to None
+    - missing multi_class attribute: sets to 'auto'
     """
     if estimator is None:
         return
-    if hasattr(estimator, "predict_proba") and not hasattr(estimator, "multi_class") and "LogisticRegression" in type(estimator).__name__:
-        setattr(estimator, "multi_class", "auto")
+    name = type(estimator).__name__
+    if "LogisticRegression" in name:
+        if getattr(estimator, "penalty", None) == "deprecated":
+            try:
+                estimator.penalty = "l2"
+            except Exception:
+                pass
+        if getattr(estimator, "l1_ratio", None) is not None and getattr(estimator, "penalty", "l2") != "elasticnet":
+            try:
+                estimator.l1_ratio = None
+            except Exception:
+                pass
+        if not hasattr(estimator, "multi_class"):
+            try:
+                setattr(estimator, "multi_class", "auto")
+            except Exception:
+                pass
     if hasattr(estimator, "steps"):
         for _, step in getattr(estimator, "steps", []):
             _ensure_estimator_compatibility(step)
@@ -132,6 +152,8 @@ def _clone_or_recreate_estimator(estimator: Any) -> Any:
     """
     if estimator is None:
         return None
+
+    _ensure_estimator_compatibility(estimator)
 
     try:
         new_est = clone(estimator)
@@ -430,7 +452,10 @@ class BiasMitigator:
         Returns X DataFrame or None on failure.
         """
         try:
-            from services.feature_resolver import build_model_feature_matrix
+            try:
+                from services.feature_resolver import build_model_feature_matrix
+            except ImportError:
+                from backend.services.feature_resolver import build_model_feature_matrix
             X = build_model_feature_matrix(
                 model=model,
                 df=df,

@@ -91,7 +91,7 @@ const useAnalysisStore = create((set, get) => ({
       auditScore:      data.audit_score       ?? null,
       grade:           data.grade             ?? null,
       overallSeverity: data.overall_severity  ?? null,
-      scenario:        data.scenario          ?? get().scenario,
+      scenario:        (get().scenario && get().scenario !== "other") ? get().scenario : (data.scenario ?? get().scenario),
       validation:      data.validation        ?? get().validation,
     }),
 

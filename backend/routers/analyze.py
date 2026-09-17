@@ -41,6 +41,7 @@ class AnalyzeRequest(BaseModel):
     target_col: str
     sensitive_attrs: list[str] = Field(min_length=1)
     model_id: str | None = None
+    scenario: Any | None = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -74,10 +75,16 @@ async def analyze(
     session = sessions[body.session_id]
     df: pd.DataFrame = session["df"].copy()
 
-    # If detected_scenario is present in preprocessing_report, set session["scenario"]
-    preprocessing_report = session.get("preprocessing_report", {})
-    if preprocessing_report.get("detected_scenario"):
-        session["scenario"] = preprocessing_report["detected_scenario"]
+    # Prioritize user-provided scenario from request
+    if body.scenario:
+        if isinstance(body.scenario, dict):
+            session["scenario"] = body.scenario.get("scenario", "other")
+        else:
+            session["scenario"] = str(body.scenario)
+    elif not session.get("scenario") or session.get("scenario") == "other":
+        preprocessing_report = session.get("preprocessing_report", {})
+        if preprocessing_report.get("detected_scenario"):
+            session["scenario"] = preprocessing_report["detected_scenario"]
 
     # ── Basic column existence checks (with case-insensitive fallback) ────────
     if body.target_col not in df.columns:

@@ -102,13 +102,22 @@ export default function ColumnSelector() {
     setAnalyzeLoading(true);
     setLoading(true);
     try {
+      const chosenScenario = scenarioData?.scenario || (typeof store.scenario === "string" ? store.scenario : store.scenario?.scenario);
       const { data } = await client.post("/api/analyze", {
         session_id:      sessionId,
         target_col:      targetCol,
         sensitive_attrs: sensitiveAttrs,
         model_id:        modelId || undefined,
+        scenario:        chosenScenario || undefined,
       });
       setMetrics(data);
+      if (chosenScenario) {
+        setScenario({
+          scenario: chosenScenario,
+          confidence_pct: scenarioData?.confidence_pct || 100,
+          reason: scenarioData?.reason || "User-selected scenario"
+        });
+      }
       setTarget(targetCol);
       setSensitive(sensitiveAttrs);
       setStep(2);

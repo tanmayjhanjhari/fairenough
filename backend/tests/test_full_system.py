@@ -156,7 +156,7 @@ if spd is not None and di is not None:
 # ── TEST 4: Explanation ──────────────────────────────────────
 section("TEST 4: Bias Explanation")
 payload = {"session_id": session_id, "target_col": "credit_risk",
-           "sensitive_attr": "gender"}
+           "sensitive_attr": "gender", "simulate_threshold": True}
 r = requests.post(f"{BASE}/api/explain", json=payload)
 check("Explain returns 200", r.status_code == 200)
 exp = r.json()
@@ -174,19 +174,19 @@ check("predicted_cause is valid",
 # ── TEST 5: Mitigation ───────────────────────────────────────
 section("TEST 5: Mitigation (CRITICAL)")
 payload = {"session_id": session_id, "target_col": "credit_risk",
-           "sensitive_attr": "gender"}
+           "sensitive_attr": "gender", "simulate_threshold": True}
 r = requests.post(f"{BASE}/api/mitigate", json=payload)
 check("Mitigate returns 200", r.status_code == 200, f"got {r.status_code}: {r.text[:200]}")
 mit = r.json()
 
 rw = mit.get("reweigh", {})
 th = mit.get("threshold", {})
-rw_before = rw.get("before", {})
-rw_after  = rw.get("after",  {})
-th_before = th.get("before", {})
-th_after  = th.get("after",  {})
-rw_eff    = rw.get("effects", {})
-th_eff    = th.get("effects", {})
+rw_before = rw.get("before") or {}
+rw_after  = rw.get("after") or {}
+th_before = th.get("before") or {}
+th_after  = th.get("after") or {}
+rw_eff    = rw.get("effects") or {}
+th_eff    = th.get("effects") or {}
 
 # Reweighing checks
 check("Reweigh before SPD present", rw_before.get("SPD") is not None,

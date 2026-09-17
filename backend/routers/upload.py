@@ -310,8 +310,13 @@ async def upload_model(
     try:
         model = joblib.load(io.BytesIO(raw))
         # Cross-version sklearn unpickling compatibility bridge
-        if not hasattr(model, "multi_class") and "LogisticRegression" in type(model).__name__:
-            setattr(model, "multi_class", "auto")
+        if "LogisticRegression" in type(model).__name__:
+            if not hasattr(model, "multi_class"):
+                setattr(model, "multi_class", "auto")
+            if getattr(model, "penalty", None) == "deprecated":
+                model.penalty = "l2"
+            if getattr(model, "l1_ratio", None) is not None and getattr(model, "penalty", "l2") != "elasticnet":
+                model.l1_ratio = None
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

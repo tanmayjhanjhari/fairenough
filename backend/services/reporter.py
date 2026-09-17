@@ -627,18 +627,25 @@ class ReportGenerator:
             # D - Why This Bias Exists
             story.append(Paragraph("D \u2014 Why This Bias Exists", _S_H2))
             cc = _cause_color(cause); cl = _cause_label(cause)
-            cbs = _s(f"cb_{attr}", fontName="Helvetica-Bold", fontSize=11, textColor=WHITE,
-                      backColor=cc, leading=16, alignment=1, borderPadding=(5,10,5,10))
-            story.append(Paragraph(f"  {cl}  ", cbs))
             conf_val = float(conf) if conf is not None else 0.0
             n_cases = int(pred.get("training_examples", 20)) or 20
             if conf_val > 0 and pred.get("learned", True):
                 conf_text = f"Based on pattern analysis of {n_cases} reference datasets"
             else:
                 conf_text = f"Rule-based analysis based on {n_cases} reference datasets"
-            story.append(Paragraph(
-                f'<font color="{GRAY.hexval()}">{conf_text}</font>',
-                _s("cct", fontName="Helvetica", fontSize=8, textColor=GRAY, leading=12, alignment=1)))
+            cause_table = Table([
+                [Paragraph(f"<b>{cl}</b>", _s(f"cb_{attr}", fontName="Helvetica-Bold", fontSize=11, textColor=WHITE, leading=14, alignment=1))],
+                [Paragraph(f'<font color="{GRAY.hexval()}">{conf_text}</font>', _s(f"cct_{attr}", fontName="Helvetica", fontSize=8, textColor=GRAY, leading=11, alignment=1))]
+            ], colWidths=[CONTENT_W])
+            cause_table.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (0, 0), cc),
+                ("TOPPADDING", (0, 0), (0, 0), 7),
+                ("BOTTOMPADDING", (0, 0), (0, 0), 7),
+                ("TOPPADDING", (0, 1), (0, 1), 4),
+                ("BOTTOMPADDING", (0, 1), (0, 1), 2),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ]))
+            story.append(cause_table)
             story.append(Spacer(1, 2*mm))
             story.append(Paragraph(self._cause_para(cause, attr, priv, unpriv, gs, prox, spd, di), _S_BODY))
 
@@ -834,16 +841,22 @@ class ReportGenerator:
             hbg  = TEAL if is_w else SURF; hfg = NAVY if is_w else WHITE
 
             ths = _s(f"th_{tk}", fontName="Helvetica-Bold", fontSize=11, textColor=hfg, leading=14)
-            row = [Paragraph(tname, ths)]
             if is_w:
-                row.append(Paragraph("  \u2605 RECOMMENDED  ",
-                    _s("rb", fontName="Helvetica-Bold", fontSize=8, textColor=NAVY, backColor=AMBER, leading=12)))
-            ht = Table([row], colWidths=[CONTENT_W])
+                row = [
+                    Paragraph(tname, ths),
+                    Paragraph("<b>★ RECOMMENDED</b>", _s(f"rb_{tk}", fontName="Helvetica-Bold", fontSize=8, textColor=NAVY, alignment=2, leading=12))
+                ]
+                ht = Table([row], colWidths=[CONTENT_W * 0.70, CONTENT_W * 0.30])
+            else:
+                row = [Paragraph(tname, ths)]
+                ht = Table([row], colWidths=[CONTENT_W])
             ht.setStyle(TableStyle([
                 ("BACKGROUND",   (0,0),(-1,-1), hbg),
                 ("TOPPADDING",   (0,0),(-1,-1), 8),
                 ("BOTTOMPADDING",(0,0),(-1,-1), 8),
                 ("LEFTPADDING",  (0,0),(-1,-1), 10),
+                ("RIGHTPADDING", (0,0),(-1,-1), 10),
+                ("VALIGN",       (0,0),(-1,-1), "MIDDLE"),
                 ("BOX",          (0,0),(-1,-1), 1, BORDER),
             ]))
             story.append(ht)
@@ -947,11 +960,12 @@ class ReportGenerator:
                 f"ACCURACY TRADE-OFF: {float(ab_v)*100:.1f}% \u2192 {float(aa_v)*100:.1f}% "
                 f"({sign}{float(ad)*100:.1f}% \u2014 {imp})",
                 _s("ra", fontName="Helvetica-Bold", fontSize=8, textColor=NAVY, leading=12)))
-        rec_t = Table([rec_content], colWidths=[CONTENT_W])
+        # Stack each element in its own row inside the single-column table
+        rec_t = Table([[p] for p in rec_content], colWidths=[CONTENT_W])
         rec_t.setStyle(TableStyle([
             ("BACKGROUND",   (0,0),(-1,-1), TEAL),
-            ("TOPPADDING",   (0,0),(-1,-1), 12),
-            ("BOTTOMPADDING",(0,0),(-1,-1), 12),
+            ("TOPPADDING",   (0,0),(-1,-1), 7),
+            ("BOTTOMPADDING",(0,0),(-1,-1), 7),
             ("LEFTPADDING",  (0,0),(-1,-1), 12),
             ("RIGHTPADDING", (0,0),(-1,-1), 12),
             ("BOX",          (0,0),(-1,-1), 2, AMBER),
