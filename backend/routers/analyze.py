@@ -74,6 +74,7 @@ async def analyze(
 
     session = sessions[body.session_id]
     df: pd.DataFrame = session["df"].copy()
+    preprocessing_report = session.get("preprocessing_report", {})
 
     # Prioritize user-provided scenario from request
     if body.scenario:
@@ -82,7 +83,6 @@ async def analyze(
         else:
             session["scenario"] = str(body.scenario)
     elif not session.get("scenario") or session.get("scenario") == "other":
-        preprocessing_report = session.get("preprocessing_report", {})
         if preprocessing_report.get("detected_scenario"):
             session["scenario"] = preprocessing_report["detected_scenario"]
 
