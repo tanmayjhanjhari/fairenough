@@ -1,4 +1,4 @@
-﻿"""
+"""
 FairEnough - Generic Bias Mitigator Service
 
 ARCHITECTURE
@@ -305,6 +305,8 @@ class BiasMitigator:
         y_true: np.ndarray,
         y_pred: np.ndarray,
         s: np.ndarray,
+        privileged_group: Any = None,
+        unprivileged_group: Any = None,
     ) -> tuple:
         """
         Compute EOD and AOD from real predictions.
@@ -318,10 +320,14 @@ class BiasMitigator:
         if len(unique_groups) < 2:
             return None, None, None, None
 
-        # Find privileged = group with highest positive prediction rate
-        pred_rates = {g: float(y_pred[s == g].mean()) for g in unique_groups}
-        priv_g = max(pred_rates, key=lambda g: pred_rates[g])
-        unpriv_g = min(pred_rates, key=lambda g: pred_rates[g])
+        if privileged_group is not None and unprivileged_group is not None:
+            priv_g = privileged_group
+            unpriv_g = unprivileged_group
+        else:
+            # Fallback: group with highest positive prediction rate
+            pred_rates = {g: float(y_pred[s == g].mean()) for g in unique_groups}
+            priv_g = max(pred_rates, key=lambda g: pred_rates[g])
+            unpriv_g = min(pred_rates, key=lambda g: pred_rates[g])
 
         def tpr_fpr(mask):
             yt = y_true[mask].astype(int)
@@ -707,6 +713,33 @@ class BiasMitigator:
         df_work["__y__"] = self._binarize(df_work[target_col])
 
         # ?? BEFORE: authoritative analysis baseline ??????????????????????????
+        # Canonical privileged / unprivileged group detection
+        priv_name = None
+        unpriv_name = None
+        if baseline_group_stats and len(baseline_group_stats) >= 2:
+            try:
+                priv_name = max(baseline_group_stats, key=lambda g: baseline_group_stats[g].get("positive_rate", 0))
+                unpriv_name = min(baseline_group_stats, key=lambda g: baseline_group_stats[g].get("positive_rate", 0))
+            except Exception:
+                pass
+
+        if priv_name is None or unpriv_name is None or priv_name == unpriv_name:
+            if df_with_pred is not None and "__predictions__" in df_with_pred.columns:
+                try:
+                    s_b_all = self._apply_binning(df_with_pred[sensitive_attr], sensitive_attr)
+                    y_p_all = self._binarize(df_with_pred["__predictions__"])
+                    rates_all = {g: float(y_p_all[s_b_all == g].mean()) for g in s_b_all.unique()}
+                    if len(rates_all) >= 2:
+                        priv_name = max(rates_all, key=lambda g: rates_all[g])
+                        unpriv_name = min(rates_all, key=lambda g: rates_all[g])
+                except Exception:
+                    pass
+            if priv_name is None or unpriv_name is None or priv_name == unpriv_name:
+                gt_rates = {g: float(df_work.loc[df_work["__sens_binned__"] == g, "__y__"].mean()) for g in df_work["__sens_binned__"].unique()}
+                if len(gt_rates) >= 2:
+                    priv_name = max(gt_rates, key=lambda g: gt_rates[g])
+                    unpriv_name = min(gt_rates, key=lambda g: gt_rates[g])
+
         if baseline_spd is not None and baseline_di is not None:
             before_spd = float(baseline_spd)
             before_di = float(baseline_di)
@@ -731,10 +764,14 @@ class BiasMitigator:
                 )
                 le = LabelEncoder()
                 s_all_pred = le.fit_transform(df_pred_work["__sens_binned__"])
+                p_enc_init = le.transform([priv_name])[0] if (priv_name is not None and priv_name in le.classes_) else None
+                u_enc_init = le.transform([unpriv_name])[0] if (unpriv_name is not None and unpriv_name in le.classes_) else None
                 y_true = self._binarize(df_pred_work[target_col]).values
                 y_pred = self._binarize(df_pred_work["__predictions__"]).values
                 eod, aod, _, _ = self._compute_eod_aod_from_predictions(
-                    y_true, y_pred, s_all_pred
+                    y_true, y_pred, s_all_pred,
+                    privileged_group=p_enc_init,
+                    unprivileged_group=u_enc_init,
                 )
                 before_eod = eod
                 before_aod = aod
@@ -920,12 +957,35 @@ class BiasMitigator:
                                 pred_orig_raw = model.predict(getattr(X_ev, "values", X_ev))
                             y_pred_orig = self._binarize(pd.Series(pred_orig_raw)).values
 
-                            # BEFORE metrics on evaluation split
+                            # Consistent privileged and unprivileged groups in encoded space (s_all / s_ev)
+                            p_enc_ev = le_s.transform([priv_name])[0] if (priv_name is not None and priv_name in le_s.classes_) else None
+                            u_enc_ev = le_s.transform([unpriv_name])[0] if (unpriv_name is not None and unpriv_name in le_s.classes_) else None
+                            if p_enc_ev is None or u_enc_ev is None or p_enc_ev == u_enc_ev:
+                                ev_unq = np.unique(s_ev)
+                                if len(ev_unq) >= 2:
+                                    p_enc_ev = ev_unq[0]
+                                    u_enc_ev = ev_unq[1]
+
+                            # ── BEFORE metrics on evaluation split (Original model on SAME held-out set) ──
                             before["accuracy"] = round(float(accuracy_score(y_ev, y_pred_orig)), 4)
                             before["precision"] = round(float(precision_score(y_ev, y_pred_orig, zero_division=0)), 4)
                             before["recall"] = round(float(recall_score(y_ev, y_pred_orig, zero_division=0)), 4)
                             before["f1"] = round(float(f1_score(y_ev, y_pred_orig, zero_division=0)), 4)
-                            b_eod, b_aod, _, _ = self._compute_eod_aod_from_predictions(y_ev, y_pred_orig, s_ev)
+
+                            pos_rates_orig = {}
+                            for g in np.unique(s_ev):
+                                m_g = (s_ev == g)
+                                pos_rates_orig[g] = float((y_pred_orig[m_g] == 1).mean()) if m_g.sum() > 0 else 0.0
+                            rate_p_orig = pos_rates_orig.get(p_enc_ev, 0.0)
+                            rate_u_orig = pos_rates_orig.get(u_enc_ev, 0.0)
+                            before["SPD"] = round(float(rate_u_orig - rate_p_orig), 4)
+                            before["DI"] = round(float(rate_u_orig / rate_p_orig), 4) if rate_p_orig > 1e-9 else (1.0 if rate_u_orig == 0 else None)
+
+                            b_eod, b_aod, _, _ = self._compute_eod_aod_from_predictions(
+                                y_ev, y_pred_orig, s_ev,
+                                privileged_group=p_enc_ev,
+                                unprivileged_group=u_enc_ev,
+                            )
                             before["EOD"] = b_eod
                             before["AOD"] = b_aod
                             before["eod_available"] = b_eod is not None
@@ -933,30 +993,56 @@ class BiasMitigator:
                             before["metrics_mode"] = "model_level"
                             before["simulation_note"] = None
 
-                            # AFTER metrics on evaluation split
+                            before_gs_ev = {}
+                            for g in np.unique(s_ev):
+                                m_g = (s_ev == g)
+                                g_label = str(le_s.inverse_transform([g])[0]) if hasattr(le_s, "inverse_transform") else str(g)
+                                before_gs_ev[g_label] = {
+                                    "count": int(m_g.sum()),
+                                    "positive_count": int((y_pred_orig[m_g] == 1).sum()),
+                                    "positive_rate": round(pos_rates_orig.get(g, 0.0), 4),
+                                    "pct_of_total": round(float(m_g.sum() / len(s_ev) * 100), 1),
+                                }
+                            before["group_stats"] = before_gs_ev
+
+                            # ── AFTER metrics on evaluation split (Reweighed model on SAME held-out set) ──
                             after["accuracy"] = round(float(accuracy_score(y_ev, y_pred_new)), 4)
                             after["precision"] = round(float(precision_score(y_ev, y_pred_new, zero_division=0)), 4)
                             after["recall"] = round(float(recall_score(y_ev, y_pred_new, zero_division=0)), 4)
                             after["f1"] = round(float(f1_score(y_ev, y_pred_new, zero_division=0)), 4)
-                            a_eod, a_aod, _, _ = self._compute_eod_aod_from_predictions(y_ev, y_pred_new, s_ev)
+
+                            pos_rates_new = {}
+                            for g in np.unique(s_ev):
+                                m_g = (s_ev == g)
+                                pos_rates_new[g] = float((y_pred_new[m_g] == 1).mean()) if m_g.sum() > 0 else 0.0
+                            rate_p_new = pos_rates_new.get(p_enc_ev, 0.0)
+                            rate_u_new = pos_rates_new.get(u_enc_ev, 0.0)
+                            after["SPD"] = round(float(rate_u_new - rate_p_new), 4)
+                            after["DI"] = round(float(rate_u_new / rate_p_new), 4) if rate_p_new > 1e-9 else (1.0 if rate_u_new == 0 else None)
+
+                            a_eod, a_aod, _, _ = self._compute_eod_aod_from_predictions(
+                                y_ev, y_pred_new, s_ev,
+                                privileged_group=p_enc_ev,
+                                unprivileged_group=u_enc_ev,
+                            )
                             after["EOD"] = a_eod
                             after["AOD"] = a_aod
                             after["eod_available"] = a_eod is not None
                             after["aod_available"] = a_aod is not None
-
-                            # Group positive rates and SPD/DI for new predictions
-                            ev_groups = np.unique(s_ev)
-                            if len(ev_groups) >= 2:
-                                pos_rates = {}
-                                for g in ev_groups:
-                                    m_g = (s_ev == g)
-                                    pos_rates[g] = float((y_pred_new[m_g] == 1).mean()) if m_g.sum() > 0 else 0.0
-                                p_g, u_g = ev_groups[0], ev_groups[1]
-                                after["SPD"] = round(float(pos_rates[u_g] - pos_rates[p_g]), 4)
-                                after["DI"] = round(float(pos_rates[u_g] / pos_rates[p_g]), 4) if pos_rates[p_g] > 1e-9 else None
-
                             after["metrics_mode"] = "model_level_reweighted"
                             after["simulation_note"] = None
+
+                            after_gs_ev = {}
+                            for g in np.unique(s_ev):
+                                m_g = (s_ev == g)
+                                g_label = str(le_s.inverse_transform([g])[0]) if hasattr(le_s, "inverse_transform") else str(g)
+                                after_gs_ev[g_label] = {
+                                    "count": int(m_g.sum()),
+                                    "positive_count": int((y_pred_new[m_g] == 1).sum()),
+                                    "positive_rate": round(pos_rates_new.get(g, 0.0), 4),
+                                    "pct_of_total": round(float(m_g.sum() / len(s_ev) * 100), 1),
+                                }
+                            after["group_stats"] = after_gs_ev
 
                             model_retrained = True
                             n_train_samples = len(train_idx)
@@ -1832,8 +1918,10 @@ class BiasMitigator:
         is_simulation: bool = False,
     ) -> dict:
         """Plain-English explanation of what the mitigation technique did."""
-        spd_before = abs(before.get("SPD") or 0)
-        spd_after = abs(after.get("SPD") or 0)
+        raw_spd_before = float(before.get("SPD") if before.get("SPD") is not None else 0.0)
+        raw_spd_after = float(after.get("SPD") if after.get("SPD") is not None else 0.0)
+        abs_spd_before = abs(raw_spd_before)
+        abs_spd_after = abs(raw_spd_after)
         acc_before = before.get("accuracy")
         acc_after = after.get("accuracy")
         bias_reduction = effects.get("bias_reduction_pct") or 0
@@ -1859,29 +1947,30 @@ class BiasMitigator:
             )
 
         sim_suffix = " (simulation)" if is_simulation else ""
-        if spd_before == 0:
+        if abs_spd_before == 0:
             bias_result = "No measurable bias before mitigation (SPD = 0)."
         elif bias_reduction >= 50:
             bias_result = (
                 f"Bias{sim_suffix} was substantially reduced. SPD moved from "
-                f"{spd_before:.3f} to {spd_after:.3f} — "
+                f"{raw_spd_before:.3f} to {raw_spd_after:.3f} — "
                 f"a {bias_reduction:.0f}% reduction."
             )
         elif bias_reduction >= 10:
             bias_result = (
                 f"Bias{sim_suffix} was partially reduced. SPD moved from "
-                f"{spd_before:.3f} to {spd_after:.3f} — "
+                f"{raw_spd_before:.3f} to {raw_spd_after:.3f} — "
                 f"a {bias_reduction:.0f}% improvement."
             )
         elif bias_reduction > 0:
             bias_result = (
                 f"Modest bias reduction{sim_suffix} ({bias_reduction:.0f}%). "
-                f"SPD moved from {spd_before:.3f} to {spd_after:.3f}."
+                f"SPD moved from {raw_spd_before:.3f} to {raw_spd_after:.3f}."
             )
         else:
             bias_result = (
-                f"This technique did not reduce bias for '{sensitive_attr}'"
-                f"{sim_suffix}. SPD remained at approximately {spd_after:.3f}."
+                f"This technique did not reduce bias for '{sensitive_attr}'{sim_suffix}. "
+                f"SPD changed from {raw_spd_before:.3f} to {raw_spd_after:.3f}. "
+                f"The absolute SPD gap changed from {abs_spd_before:.3f} to {abs_spd_after:.3f}."
             )
 
         if acc_before is None or acc_after is None:

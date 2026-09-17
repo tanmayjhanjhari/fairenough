@@ -233,6 +233,42 @@ class TestReweighingEndToEnd:
         assert res["after"]["accuracy"] is not None
 
 
+
+    def test_9_consistent_eval_split_and_spd_explanation(self, mitigator, synthetic_df):
+        """Verify before & after are evaluated on same split, with dynamic SPD explanation."""
+        X = synthetic_df[["Feature1", "Feature2"]]
+        y = synthetic_df["Outcome"]
+        orig_model = LogisticRegression(random_state=42)
+        orig_model.fit(X, y)
+
+        res = mitigator.reweigh(
+            df=synthetic_df,
+            target_col="Outcome",
+            sensitive_attr="Group",
+            model=orig_model,
+        )
+
+        assert res["model_retrained"] is True
+        before = res["before"]
+        after = res["after"]
+
+        # Both before and after must have all 8 metrics populated on held-out eval set
+        for k in ["SPD", "DI", "EOD", "AOD", "accuracy", "precision", "recall", "f1"]:
+            assert before.get(k) is not None, f"before missing {k}"
+            assert after.get(k) is not None, f"after missing {k}"
+
+        # Explanation dynamic wording check
+        expl = mitigator._generate_explanation(
+            before={"SPD": -0.001, "accuracy": 0.70},
+            after={"SPD": 0.003, "accuracy": 0.70},
+            technique="reweigh",
+            sensitive_attr="sex",
+            effects={"bias_reduction_pct": 0.0}
+        )
+        assert "SPD changed from -0.001 to 0.003" in expl["bias_result"]
+        assert "The absolute SPD gap changed from 0.001 to 0.003" in expl["bias_result"]
+
+
 class TestPresentationAndMetadataFixes:
     """Tests for Scenario metadata, PDF Side-by-Side Comparison SPD sign, and layout."""
 

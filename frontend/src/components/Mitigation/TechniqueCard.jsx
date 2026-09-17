@@ -111,9 +111,11 @@ function ReweighExplainer({ data }) {
                 { step: "1", text: "Count how often each (group, outcome) combination appears in the dataset." },
                 { step: "2", text: "Compute statistical weights: w = P(Group) × P(Outcome) / P(Group, Outcome). Under-represented combinations get a weight > 1; over-represented ones get < 1." },
                 { step: "3", text: modelRetrained
-                    ? `Clone the original model (${originalModelType || "model"}) and refit it on 70% of the data using these sample weights. Evaluate on the remaining 30%.`
+                    ? `Clone the original model (${originalModelType || "model"}) and refit it on 70% of the data using these sample weights. Evaluate on the remaining 30% held-out test split.`
                     : "Apply weights to the dataset outcome distribution to compute the expected fairness metrics without retraining a model." },
-                { step: "4", text: "Measure SPD and DI from the reweighted distribution — and performance from the retrained model (if available)." },
+                { step: "4", text: modelRetrained
+                    ? `Evaluate the retrained model on the SAME ${nEval ? nEval + " " : ""}held-out evaluation samples to compute NEW fairness metrics (SPD, DI, EOD, AOD) and NEW performance metrics (Accuracy, Precision, Recall, F1) from actual model predictions.`
+                    : "Measure dataset-level SPD and DI from the reweighted outcome distribution (performance metrics are unavailable without a retrained model)." },
               ].map(({ step, text }) => (
                 <div key={step} className="flex gap-3 items-start">
                   <span className="w-5 h-5 rounded-full bg-accent/20 border border-accent/30 flex-shrink-0 flex items-center justify-center text-[9px] font-bold text-accent">{step}</span>
@@ -132,10 +134,12 @@ function ReweighExplainer({ data }) {
               </div>
               <ul className="space-y-1">
                 {[
-                  "Statistical outcome distribution (SPD, DI)",
-                  modelRetrained ? `A new version of ${originalModelType || "the model"} was trained with sample weights` : null,
-                  modelRetrained ? `Performance metrics (Acc/F1) evaluated on ${nEval} held-out samples` : null,
-                  modelRetrained ? "EOD and AOD (from retrained model predictions)" : null,
+                  modelRetrained
+                    ? `New fairness metrics (SPD, DI, EOD, AOD) computed from retrained model predictions on held-out test set`
+                    : "Statistical outcome distribution (SPD, DI) reweighted across the dataset",
+                  modelRetrained ? `A fresh clone of ${originalModelType || "the model"} was trained using sample weights` : null,
+                  modelRetrained ? `Performance metrics (Accuracy, Precision, Recall, F1) evaluated on ${nEval} held-out test samples` : null,
+                  modelRetrained ? "Learned decision boundary adjusted to balance group outcomes" : null,
                 ].filter(Boolean).map((item, i) => (
                   <li key={i} className="text-xs text-success/80 leading-relaxed flex gap-1.5 items-start">
                     <span className="mt-1 flex-shrink-0">•</span><span>{item}</span>
@@ -152,9 +156,9 @@ function ReweighExplainer({ data }) {
               <ul className="space-y-1">
                 {[
                   modelRetrained ? `The original deployed model (${originalModelType || "model"}) — only a clone is retrained` : "The original model — no model was modified",
-                  "The raw input data",
-                  "The model's decision logic at inference time",
-                  "Feature engineering and preprocessing",
+                  "The raw input data and ground-truth labels",
+                  "The inference procedure and model architecture (classification threshold and feature structure)",
+                  "Feature engineering, preprocessing, and column definitions",
                 ].map((item, i) => (
                   <li key={i} className="text-xs text-textSecondary/70 leading-relaxed flex gap-1.5 items-start">
                     <span className="mt-1 flex-shrink-0">•</span><span>{item}</span>
@@ -181,7 +185,7 @@ function ReweighExplainer({ data }) {
                 ))}
               </div>
               <p className="text-[10px] text-textSecondary/50 mt-2">
-                Weights are clipped to [0.1, 10.0]. Weight = 1.0 means unaffected. &gt;1 = upsampled. &lt;1 = downsampled.
+                Canonical weights computed via w = P(G)·P(Y)/P(G,Y) and bounded to [0.1, 10.0] as a numerical safeguard against extreme gradient updates. Weight = 1.0 means unaffected; &gt;1.0 = upweighted; &lt;1.0 = downweighted.
               </p>
             </div>
           )}
@@ -266,10 +270,10 @@ function ThresholdExplainer({ data }) {
               </div>
               <ul className="space-y-1">
                 {[
-                  "The decision threshold — now different per group",
-                  "Which samples get a positive prediction",
-                  "SPD, DI, EOD, AOD (from new group-specific decisions)",
-                  "Accuracy, Precision, Recall, F1 (re-evaluated with new thresholds)",
+                  "The decision threshold — calibrated per demographic group to equalise positive rates",
+                  "Which samples receive a positive prediction based on group-specific cutoffs",
+                  "SPD, DI, EOD, AOD (measured from new group-specific decisions)",
+                  "Accuracy, Precision, Recall, F1 (re-evaluated under adjusted thresholds)",
                 ].map((item, i) => (
                   <li key={i} className="text-xs text-success/80 leading-relaxed flex gap-1.5 items-start">
                     <span className="mt-1 flex-shrink-0">•</span><span>{item}</span>
@@ -285,10 +289,10 @@ function ThresholdExplainer({ data }) {
               </div>
               <ul className="space-y-1">
                 {[
-                  "The model's internal weights and parameters",
-                  "The model's probability scores (probabilities are unchanged)",
-                  "The training data or feature engineering",
-                  "The model's architecture",
+                  "The model's internal weights, parameters, and decision boundaries (no retraining)",
+                  "The model's raw probability scores from predict_proba (probabilities remain identical)",
+                  "The training data, features, and model architecture",
+                  "The original deployed model artifact",
                 ].map((item, i) => (
                   <li key={i} className="text-xs text-textSecondary/70 leading-relaxed flex gap-1.5 items-start">
                     <span className="mt-1 flex-shrink-0">•</span><span>{item}</span>
