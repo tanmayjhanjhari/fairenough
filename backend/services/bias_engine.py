@@ -1,4 +1,4 @@
-﻿"""
+"""
 FairEnough – Bias Engine
 
 Computes dataset-level and model-level fairness metrics.

@@ -1,4 +1,3 @@
-from services.feature_resolver import build_model_feature_matrix
 """
 FairEnough — Analyze Router
 
@@ -21,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from services.validator import DataValidator
 from services.bias_engine import BiasEngine
+from services.feature_resolver import build_model_feature_matrix
 
 # Import TRAINING_FILE path for learning-stats endpoint
 try:

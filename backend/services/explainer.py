@@ -1,4 +1,4 @@
-﻿"""
+"""
 FairEnough â€” Bias Explainer Service
 
 Analyses *why* bias exists in a dataset:

@@ -1,4 +1,4 @@
-﻿"""
+"""
 FairEnough - Fairness Correctness Tests
 
 Tests that verify:
