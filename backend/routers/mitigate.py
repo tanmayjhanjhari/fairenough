@@ -60,11 +60,26 @@ async def mitigate(
     print(f"[Mitigate] Running mitigation for attr='{body.sensitive_attr}' "
           f"target='{body.target_col}' session='{body.session_id}'")
 
-    for col, label in [(body.target_col, "target"), (body.sensitive_attr, "sensitive attribute")]:
-        if col not in df.columns:
+    if body.target_col not in df.columns:
+        for c in df.columns:
+            if c.lower() == body.target_col.lower():
+                body.target_col = c
+                break
+        else:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"The {label} column '{col}' was not found in the dataset.",
+                detail=f"The target column '{body.target_col}' was not found in the dataset.",
+            )
+
+    if body.sensitive_attr not in df.columns:
+        for c in df.columns:
+            if c.lower() == body.sensitive_attr.lower():
+                body.sensitive_attr = c
+                break
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"The sensitive attribute column '{body.sensitive_attr}' was not found in the dataset.",
             )
 
     # ── Check if fairlearn fallback is needed ─────────────────────────────────
@@ -137,6 +152,8 @@ async def mitigate(
 
     allow_simulation = bool(body.simulate_threshold)
     column_mapping = session.get("column_mapping")
+    prep_rep = session.get("preprocessing_report", {})
+    dropped_cols = prep_rep.get("dropped_column_values") or prep_rep.get("zero_variance_cols_dropped")
 
     try:
         mitigation_results = mitigator.run_both(
@@ -151,6 +168,7 @@ async def mitigate(
             df_with_pred=df_with_pred,
             allow_simulation=allow_simulation,
             column_mapping=column_mapping,
+            dropped_cols=dropped_cols,
         )
     except ValueError as exc:
         raise HTTPException(

@@ -16,6 +16,9 @@ from routers import upload, analyze, mitigate, report, gemini_chat, explain, aut
 
 # Load environment variables
 load_dotenv()
+_backend_env = os.path.join(os.path.dirname(__file__), '.env')
+if os.path.exists(_backend_env):
+    load_dotenv(_backend_env)
 
 
 @asynccontextmanager

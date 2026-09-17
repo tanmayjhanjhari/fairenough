@@ -79,12 +79,30 @@ async def analyze(
     if preprocessing_report.get("detected_scenario"):
         session["scenario"] = preprocessing_report["detected_scenario"]
 
-    # ── Basic column existence checks ─────────────────────────────────────────
+    # ── Basic column existence checks (with case-insensitive fallback) ────────
     if body.target_col not in df.columns:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Target column '{body.target_col}' not found in dataset.",
-        )
+        for c in df.columns:
+            if c.lower() == body.target_col.lower():
+                body.target_col = c
+                break
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Target column '{body.target_col}' not found in dataset.",
+            )
+
+    resolved_sensitive = []
+    for a in body.sensitive_attrs:
+        if a in df.columns:
+            resolved_sensitive.append(a)
+        else:
+            for c in df.columns:
+                if c.lower() == a.lower():
+                    resolved_sensitive.append(c)
+                    break
+            else:
+                resolved_sensitive.append(a)
+    body.sensitive_attrs = resolved_sensitive
 
     missing_attrs = [a for a in body.sensitive_attrs if a not in df.columns]
     if missing_attrs:
@@ -121,6 +139,7 @@ async def analyze(
     if model_session is not None and "model" in model_session:
         model = model_session["model"]
         column_mapping = session.get("column_mapping")
+        dropped_cols = preprocessing_report.get("dropped_column_values") or preprocessing_report.get("zero_variance_cols_dropped")
 
         try:
             X = build_model_feature_matrix(
@@ -129,6 +148,7 @@ async def analyze(
                 target_col=body.target_col,
                 sensitive_attr=body.sensitive_attrs[0] if body.sensitive_attrs else None,
                 column_mapping=column_mapping,
+                dropped_cols=dropped_cols,
             )
         except ValueError as exc:
             raise HTTPException(

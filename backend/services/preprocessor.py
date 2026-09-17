@@ -22,6 +22,7 @@ class DataPreprocessor:
             "column_mapping": {},
             "normalized_to_original": {},
             "original_columns": [],
+            "dropped_column_values": {},
             "uci_adult_detected": False,
             "warnings": []
         }
@@ -82,9 +83,10 @@ class DataPreprocessor:
                 report["warnings"].append(f"Column '{col}' looks like a row ID. Consider excluding it from analysis.")
 
         # New Step: Zero Variance Columns
-        df, zero_var_cols = self._drop_zero_variance_columns(df)
+        df, zero_var_cols, dropped_values = self._drop_zero_variance_columns(df)
         if zero_var_cols:
             report["zero_variance_cols_dropped"] = zero_var_cols
+            report["dropped_column_values"] = dropped_values
 
         report["final_rows"] = len(df)
         report["final_cols"] = len(df.columns)
@@ -223,7 +225,7 @@ class DataPreprocessor:
 
     def _standardize_missing_values(self, df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
         missing_indicators = [
-            '?', 'N/A', 'NA', 'n/a', 'na', 'null', 'NULL', 'None', 'none', '-', '--', 'missing', 'MISSING', 'unknown', 'Unknown'
+            '?', 'N/A', 'NA', 'n/a', 'na', 'null', 'NULL', 'None', '-', '--', 'missing', 'MISSING'
         ]
         
         initial_nas = df.isna().sum().sum()
@@ -320,11 +322,14 @@ class DataPreprocessor:
                     id_cols.append(col)
         return id_cols
 
-    def _drop_zero_variance_columns(self, df: pd.DataFrame) -> tuple[pd.DataFrame, list]:
+    def _drop_zero_variance_columns(self, df: pd.DataFrame) -> tuple[pd.DataFrame, list, dict]:
         zero_var_cols = []
+        dropped_values = {}
         for col in df.columns:
-            if df[col].nunique(dropna=True) <= 1:
+            if df[col].nunique(dropna=False) <= 1:
                 zero_var_cols.append(col)
+                val = df[col].dropna().iloc[0] if df[col].notna().any() else 0
+                dropped_values[col] = val
         if zero_var_cols:
             df.drop(columns=zero_var_cols, inplace=True)
-        return df, zero_var_cols
+        return df, zero_var_cols, dropped_values

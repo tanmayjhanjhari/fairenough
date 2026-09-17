@@ -333,6 +333,7 @@ class BiasMitigator:
         target_col: str,
         sensitive_attr: str,
         column_mapping: dict[str, str] | None = None,
+        dropped_cols: dict[str, Any] | list[str] | None = None,
     ) -> pd.DataFrame | None:
         """
         Build the feature matrix as the real model expects it.
@@ -349,6 +350,7 @@ class BiasMitigator:
                 target_col=target_col,
                 sensitive_attr=sensitive_attr,
                 column_mapping=column_mapping,
+                dropped_cols=dropped_cols,
             )
             return X
         except Exception as exc:
@@ -372,6 +374,7 @@ class BiasMitigator:
         df_with_pred: pd.DataFrame | None = None,
         allow_simulation: bool = True,
         column_mapping: dict[str, str] | None = None,
+        dropped_cols: dict[str, Any] | list[str] | None = None,
     ) -> dict[str, Any]:
         """
         Run both mitigation strategies and return a unified comparison.
@@ -409,6 +412,7 @@ class BiasMitigator:
             df_with_pred=df_with_pred,
             allow_simulation=allow_simulation,
             column_mapping=column_mapping,
+            dropped_cols=dropped_cols,
         )
 
         if thr.get("model_required") or not thr.get("after"):
@@ -760,6 +764,7 @@ class BiasMitigator:
         min_samples_per_class: int = 2,
         allow_simulation: bool = True,
         column_mapping: dict[str, str] | None = None,
+        dropped_cols: dict[str, Any] | list[str] | None = None,
     ) -> dict[str, Any]:
         """
         Threshold adjustment mitigation.
@@ -853,6 +858,7 @@ class BiasMitigator:
                 max_pos_rate=max_pos_rate,
                 min_samples_per_class=min_samples_per_class,
                 column_mapping=column_mapping,
+                dropped_cols=dropped_cols,
             )
             res["has_real_model"] = True
             return res
@@ -918,6 +924,7 @@ class BiasMitigator:
         max_pos_rate: float = 0.95,
         min_samples_per_class: int = 2,
         column_mapping: dict[str, str] | None = None,
+        dropped_cols: dict[str, Any] | list[str] | None = None,
     ) -> dict[str, Any]:
         """
         Threshold adjustment using the REAL model's predict_proba.
@@ -937,7 +944,7 @@ class BiasMitigator:
             valid_mask = df_aligned[[target_col, sensitive_attr]].notna().all(axis=1)
             df_aligned = df_aligned[valid_mask].reset_index(drop=True)
             X_aligned = self._prepare_features_for_model(
-                df_aligned, model, target_col, sensitive_attr, column_mapping=column_mapping
+                df_aligned, model, target_col, sensitive_attr, column_mapping=column_mapping, dropped_cols=dropped_cols
             )
             if X_aligned is None:
                 raise ValueError("Could not build feature matrix for the real model")

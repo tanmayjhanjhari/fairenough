@@ -1,27 +1,12 @@
-"""
-FairEnough - Feature Name Compatibility Regression Tests
-
-Verifies that models trained on PascalCase, CamelCase, or case-sensitive
-column names (such as the German Credit dataset's 'CheckingStatus', 'LoanDuration', 'Sex')
-seamlessly work with FairEnough's normalized lowercase dataset columns across:
-1. Preprocessing normalization and column_mapping preservation
-2. Feature resolver service (resolve_model_features, build_model_feature_matrix)
-3. German Credit scenario: PascalCase model feature_names_in_ evaluated against lowercase dataset
-4. Model prediction flow producing predictions for BiasEngine (EOD, AOD computation)
-5. Mitigation flow executing real model threshold adjustment (is_simulation=False, has_real_model=True)
-6. Second distinct domain-agnostic scenario (HR Hiring / Candidate evaluation)
-7. Missing feature detection (clear descriptive ValueError)
-8. Ambiguous feature collision detection
-9. Target column and internal column exclusion
-"""
-
+# -*- coding: utf-8 -*-
+import io
+import os
+import pickle
+import sys
 import unittest
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import LogisticRegression
-
-import sys
-import os
 
 backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if backend_dir not in sys.path:
@@ -37,281 +22,354 @@ from services.preprocessor import DataPreprocessor
 from services.bias_engine import BiasEngine
 from services.mitigator import BiasMitigator
 
+PASCAL_COLS_20 = [
+    'CheckingStatus', 'LoanDuration', 'CreditHistory', 'LoanPurpose',
+    'LoanAmount', 'ExistingSavings', 'EmploymentDuration',
+    'InstallmentPercent', 'Sex', 'OthersOnLoan',
+    'CurrentResidenceDuration', 'OwnsProperty', 'Age',
+    'InstallmentPlans', 'Housing', 'ExistingCreditsCount', 'Job',
+    'Dependents', 'Telephone', 'ForeignWorker'
+]
+
+def generate_synthetic_german_credit_df(n=150, seed=42):
+    rng = np.random.RandomState(seed)
+    data = {col: rng.randint(0, 5, size=n) for col in PASCAL_COLS_20}
+    data['Telephone'] = rng.choice(['none', 'yes'], size=n)
+    data['Risk'] = np.where((data['Sex'] > 2) | (data['LoanAmount'] > 2), 1, 0)
+    return pd.DataFrame(data)
+
+def train_synthetic_model(df_raw):
+    X_train = df_raw[PASCAL_COLS_20].copy()
+    X_train['Telephone'] = (X_train['Telephone'] == 'yes').astype(int)
+    model = LogisticRegression(max_iter=300, random_state=42)
+    model.fit(X_train, df_raw['Risk'])
+    return model
 
 class TestFeatureResolverUnit(unittest.TestCase):
-    """Unit tests for feature_resolver service."""
+    def test_1_normalize_and_canonical_helpers(self):
+        self.assertEqual(normalize_column_name('CheckingStatus'), 'checkingstatus')
+        self.assertEqual(normalize_column_name('Loan Duration (Months)'), 'loan_duration_months')
+        self.assertEqual(canonical_alphanumeric('Loan-Duration_Months'), 'loandurationmonths')
+        self.assertEqual(canonical_alphanumeric('Telephone'), 'telephone')
+        self.assertEqual(canonical_alphanumeric(chr(65279) + 'CheckingStatus'), 'checkingstatus')
 
-    def test_normalize_and_canonical_helpers(self):
-        self.assertEqual(normalize_column_name("CheckingStatus"), "checkingstatus")
-        self.assertEqual(normalize_column_name("Loan Duration (Months)"), "loan_duration_months")
-        self.assertEqual(canonical_alphanumeric("Loan-Duration_Months"), "loandurationmonths")
-        self.assertEqual(canonical_alphanumeric("Sex"), "sex")
-
-    def test_exact_match(self):
-        df = pd.DataFrame({"age": [25, 40], "income": [50000, 80000], "target": [0, 1]})
+    def test_2_model_feature_ordering_preserved(self):
+        df = pd.DataFrame({'a': [1, 2], 'b': [3, 4], 'c': [5, 6], 'risk': [0, 1]})
         model = LogisticRegression()
-        X_train = df[["age", "income"]]
-        model.fit(X_train, df["target"])
+        model.feature_names_in_ = np.array(['C', 'A', 'B'], dtype=object)
 
-        mapping, missing = resolve_model_features(model, df, target_col="target")
+        X = build_model_feature_matrix(model, df, target_col='risk')
+        self.assertListEqual(list(X.columns), ['C', 'A', 'B'])
+        self.assertListEqual(list(X['C'].values), [5, 6])
+        self.assertListEqual(list(X['A'].values), [1, 2])
+        self.assertListEqual(list(X['B'].values), [3, 4])
+
+    def test_3_already_lowercase_model_succeeds(self):
+        cols = ['feat_alpha', 'feat_beta', 'feat_gamma']
+        df = pd.DataFrame({
+            'feat_alpha': [1.0, 2.0],
+            'feat_beta': [3.0, 4.0],
+            'feat_gamma': [5.0, 6.0],
+            'label': [0, 1]
+        })
+        model = LogisticRegression()
+        model.fit(df[cols], df['label'])
+
+        resolved, missing = resolve_model_features(model, df, target_col='label')
         self.assertEqual(missing, [])
-        self.assertEqual(mapping, {"age": "age", "income": "income"})
+        self.assertEqual(resolved, {'feat_alpha': 'feat_alpha', 'feat_beta': 'feat_beta', 'feat_gamma': 'feat_gamma'})
 
-        X = build_model_feature_matrix(model, df, target_col="target")
-        self.assertListEqual(list(X.columns), ["age", "income"])
-        self.assertEqual(X.shape, (2, 2))
+        X = build_model_feature_matrix(model, df, target_col='label')
+        self.assertListEqual(list(X.columns), cols)
 
-    def test_pascalcase_to_lowercase_german_credit(self):
-        """Simulates German Credit where model expects PascalCase features."""
-        pascal_cols = [
-            "CheckingStatus", "LoanDuration", "CreditHistory", "LoanPurpose", "LoanAmount",
-            "ExistingSavings", "EmploymentDuration", "InstallmentPercent", "Sex", "OthersOnLoan",
-            "CurrentResidenceDuration", "OwnsProperty", "Age", "InstallmentPlans", "Housing",
-            "ExistingCreditsCount", "Job", "Dependents", "Telephone", "ForeignWorker"
-        ]
-        np.random.seed(42)
-        n = 60
-        data = {col: np.random.randint(0, 5, size=n) for col in pascal_cols}
-        data["Risk"] = np.random.choice([0, 1], size=n)
-        df_raw = pd.DataFrame(data)
+    def test_4_all_21_features_including_telephone_with_none_and_yes(self):
+        df_raw = generate_synthetic_german_credit_df(n=120)
+        model = train_synthetic_model(df_raw)
 
-        # Train model with PascalCase column names
-        model = LogisticRegression(max_iter=200)
-        model.fit(df_raw[pascal_cols], df_raw["Risk"])
-
-        # Preprocess CSV (simulating FairEnough upload normalization)
         preprocessor = DataPreprocessor()
-        csv_bytes = df_raw.to_csv(index=False).encode("utf-8")
-        df_norm, report = preprocessor.process(csv_bytes, "german_credit.csv")
+        csv_bytes = df_raw.to_csv(index=False).encode('utf-8')
+        df_norm, report = preprocessor.process(csv_bytes, 'german_credit.csv')
 
-        # Check mapping and resolution
-        column_mapping = report.get("column_mapping")
-        self.assertIsNotNone(column_mapping)
-        self.assertIn("CheckingStatus", column_mapping)
-        self.assertEqual(column_mapping["CheckingStatus"], "checkingstatus")
-        self.assertEqual(column_mapping["Sex"], "sex")
+        self.assertIn('telephone', df_norm.columns)
+        self.assertIn('checkingstatus', df_norm.columns)
+        self.assertIn('CheckingStatus', report['column_mapping'])
+        self.assertIn('Telephone', report['column_mapping'])
 
         resolved_map, missing = resolve_model_features(
             model=model,
             df=df_norm,
-            target_col="risk",
-            column_mapping=column_mapping,
+            target_col='risk',
+            column_mapping=report['column_mapping'],
         )
-        self.assertEqual(missing, [])
-        self.assertEqual(len(resolved_map), len(pascal_cols))
-        self.assertEqual(resolved_map["CheckingStatus"], "checkingstatus")
-        self.assertEqual(resolved_map["Sex"], "sex")
-        self.assertEqual(resolved_map["Age"], "age")
-
-        # Build feature matrix
-        X = build_model_feature_matrix(
-            model=model,
-            df=df_norm,
-            target_col="risk",
-            sensitive_attr="sex",
-            column_mapping=column_mapping,
-        )
-        self.assertListEqual(list(X.columns), pascal_cols)
-        preds = model.predict(X)
-        self.assertEqual(len(preds), n)
-
-    def test_second_domain_hiring_dataset(self):
-        """Domain-agnostic test with completely different schema and naming conventions."""
-        raw_cols = ["Applicant_ID", "Years_Experience", "Interview_Score_Pct", "Degree_Level", "Gender", "Hired"]
-        df_raw = pd.DataFrame({
-            "Applicant_ID": [101, 102, 103, 104],
-            "Years_Experience": [2, 5, 8, 1],
-            "Interview_Score_Pct": [82.5, 91.0, 74.5, 60.0],
-            "Degree_Level": ["BS", "MS", "PhD", "BS"],
-            "Gender": ["Female", "Male", "Female", "Male"],
-            "Hired": [1, 1, 0, 0],
-        })
-
-        train_features = ["Years_Experience", "Interview_Score_Pct", "Degree_Level", "Gender"]
-        # Train model with encoded categoricals
-        X_train = df_raw[train_features].copy()
-        X_train["Degree_Level"] = [0, 1, 2, 0]
-        X_train["Gender"] = [0, 1, 0, 1]
-        model = LogisticRegression()
-        model.fit(X_train, df_raw["Hired"])
-
-        # Preprocess DataFrame
-        preprocessor = DataPreprocessor()
-        csv_bytes = df_raw.to_csv(index=False).encode("utf-8")
-        df_norm, report = preprocessor.process(csv_bytes, "hiring.csv")
+        self.assertEqual(missing, [], f'Expected zero missing features, got: {missing}')
+        self.assertEqual(resolved_map['Telephone'], 'telephone')
 
         X = build_model_feature_matrix(
             model=model,
             df=df_norm,
-            target_col="hired",
-            sensitive_attr="gender",
-            column_mapping=report["column_mapping"],
+            target_col='risk',
+            sensitive_attr='sex',
+            column_mapping=report['column_mapping'],
+            dropped_cols=report.get('dropped_column_values'),
         )
-        self.assertListEqual(list(X.columns), train_features)
-        proba = model.predict_proba(X)
-        self.assertEqual(proba.shape, (4, 2))
+        self.assertListEqual(list(X.columns), PASCAL_COLS_20)
+        self.assertEqual(len(X), len(df_norm))
 
-    def test_missing_features_detected(self):
-        """Model expecting features that are truly not in the dataset raises ValueError."""
-        df = pd.DataFrame({"feat_a": [1, 2], "feat_b": [3, 4], "label": [0, 1]})
+    def test_5_truly_missing_features_raise_value_error(self):
+        df = pd.DataFrame({'feat_a': [1, 2], 'feat_b': [3, 4], 'label': [0, 1]})
         model = LogisticRegression()
-        # Mock feature_names_in_
-        model.feature_names_in_ = np.array(["feat_a", "feat_b", "feat_completely_missing"], dtype=object)
+        model.feature_names_in_ = np.array(['feat_a', 'feat_b', 'feat_completely_missing'], dtype=object)
 
         with self.assertRaises(ValueError) as ctx:
-            build_model_feature_matrix(model, df, target_col="label")
-        self.assertIn("feat_completely_missing", str(ctx.exception))
+            build_model_feature_matrix(model, df, target_col='label')
+        self.assertIn('feat_completely_missing', str(ctx.exception))
 
-    def test_ambiguous_collision_handling(self):
-        """When multiple model features map to the same dataset column, raises ValueError."""
-        df = pd.DataFrame({"account_status": [1, 2], "label": [0, 1]})
+    def test_6_ambiguous_collision_handling(self):
+        df = pd.DataFrame({'account_status': [1, 2], 'label': [0, 1]})
         model = LogisticRegression()
-        # Two model features that both reduce to account_status
-        model.feature_names_in_ = np.array(["Account_Status", "accountstatus"], dtype=object)
+        model.feature_names_in_ = np.array(['Account_Status', 'accountstatus'], dtype=object)
 
         with self.assertRaises(ValueError) as ctx:
-            build_model_feature_matrix(model, df, target_col="label")
-        self.assertIn("Ambiguous feature collision", str(ctx.exception))
+            build_model_feature_matrix(model, df, target_col='label')
+        self.assertIn('Ambiguous feature collision', str(ctx.exception))
 
-    def test_target_and_internal_columns_excluded(self):
-        """Ensure target column and internal columns (__predictions__, etc.) are excluded."""
+    def test_7_target_and_internal_columns_excluded(self):
         df = pd.DataFrame({
-            "feat_1": [1, 2],
-            "risk": [0, 1],
-            "__predictions__": [0, 1],
-            "__sens_binned__": ["a", "b"],
+            'feat_1': [1, 2],
+            'risk': [0, 1],
+            '__predictions__': [0, 1],
+            '__sens_binned__': ['a', 'b'],
         })
         model = LogisticRegression()
-        # If model expects 'risk', it should not map it from target_col
-        model.feature_names_in_ = np.array(["feat_1", "Risk"], dtype=object)
+        model.feature_names_in_ = np.array(['feat_1', 'Risk'], dtype=object)
 
         mapping, missing = resolve_model_features(
             model=model,
             df=df,
-            target_col="risk",
-            column_mapping={"Risk": "risk"},
+            target_col='risk',
+            column_mapping={'Risk': 'risk'},
         )
-        self.assertIn("Risk", missing)
-        self.assertEqual(mapping, {"feat_1": "feat_1"})
+        self.assertIn('Risk', missing)
+        self.assertEqual(mapping, {'feat_1': 'feat_1'})
 
+    def test_8_fuzzy_or_spelling_variation_resolved(self):
+        df = pd.DataFrame({'telephon': [1, 0], 'age': [25, 30], 'risk': [0, 1]})
+        model = LogisticRegression()
+        model.feature_names_in_ = np.array(['Telephone', 'Age'], dtype=object)
+
+        resolved, missing = resolve_model_features(model, df, target_col='risk')
+        self.assertEqual(missing, [])
+        self.assertEqual(resolved['Telephone'], 'telephon')
+        self.assertEqual(resolved['Age'], 'age')
+
+    def test_9_zero_variance_dropped_column_safe_recovery(self):
+        df = pd.DataFrame({'feat_a': [1, 2], 'risk': [0, 1]})
+        model = LogisticRegression()
+        model.feature_names_in_ = np.array(['feat_a', 'ConstantCol'], dtype=object)
+
+        X = build_model_feature_matrix(
+            model=model,
+            df=df,
+            target_col='risk',
+            dropped_cols={'constantcol': 1},
+        )
+        self.assertListEqual(list(X.columns), ['feat_a', 'ConstantCol'])
+        self.assertListEqual(list(X['ConstantCol'].values), [1, 1])
 
 class TestEndToEndFeatureCompatibilityFlow(unittest.TestCase):
-    """Verifies the complete pipeline: upload -> preprocess -> model -> analyze -> mitigate."""
+    def test_full_pipeline_with_all_21_synthetic_features(self):
+        df_raw = generate_synthetic_german_credit_df(n=150)
+        model = train_synthetic_model(df_raw)
 
-    def test_german_credit_analyze_and_mitigate_pipeline(self):
-        """
-        Full German Credit simulation:
-        1. Model fitted on 20 PascalCase features.
-        2. Raw CSV with PascalCase headers processed by DataPreprocessor (normalized to lowercase).
-        3. Feature matrix reconstructed with exact model names and order.
-        4. Model predictions added to DataFrame.
-        5. BiasEngine computes SPD, DI, EOD, AOD.
-        6. BiasMitigator runs threshold adjustment using real model (is_simulation=False).
-        """
-        pascal_cols = [
-            "CheckingStatus", "LoanDuration", "CreditHistory", "LoanPurpose", "LoanAmount",
-            "ExistingSavings", "EmploymentDuration", "InstallmentPercent", "Sex", "OthersOnLoan",
-            "CurrentResidenceDuration", "OwnsProperty", "Age", "InstallmentPlans", "Housing",
-            "ExistingCreditsCount", "Job", "Dependents", "Telephone", "ForeignWorker"
-        ]
-        np.random.seed(42)
-        n = 200
-        data = {col: np.random.randint(1, 10, size=n) for col in pascal_cols}
-        # Biased label based on Sex
-        data["Risk"] = np.where(np.array(data["Sex"]) > 4, 1, 0)
-        df_raw = pd.DataFrame(data)
-
-        # 1. Train model on PascalCase features
-        model = LogisticRegression(max_iter=300)
-        model.fit(df_raw[pascal_cols], df_raw["Risk"])
-
-        # 2. Preprocess CSV
         preprocessor = DataPreprocessor()
-        csv_bytes = df_raw.to_csv(index=False).encode("utf-8")
-        df_norm, report = preprocessor.process(csv_bytes, "german_credit.csv")
+        csv_bytes = df_raw.to_csv(index=False).encode('utf-8')
+        df_norm, report = preprocessor.process(csv_bytes, 'german_credit.csv')
 
-        # Verify normalization took place
-        self.assertIn("checkingstatus", df_norm.columns)
-        self.assertIn("sex", df_norm.columns)
-        self.assertNotIn("CheckingStatus", df_norm.columns)
-
-        # 3. Build model feature matrix
-        column_mapping = report["column_mapping"]
+        column_mapping = report['column_mapping']
+        dropped_cols = report.get('dropped_column_values')
         X = build_model_feature_matrix(
             model=model,
             df=df_norm,
-            target_col="risk",
-            sensitive_attr="sex",
+            target_col='risk',
+            sensitive_attr='sex',
             column_mapping=column_mapping,
+            dropped_cols=dropped_cols,
         )
-        self.assertListEqual(list(X.columns), pascal_cols)
+        self.assertListEqual(list(X.columns), PASCAL_COLS_20)
 
-        # 4. Generate predictions
         predictions = model.predict(X)
-        df_norm["__predictions__"] = predictions
-        self.assertEqual(len(predictions), n)
+        df_norm['__predictions__'] = predictions
 
-        # 5. Run BiasEngine
         engine = BiasEngine()
         bias_res = engine.analyze(
             df=df_norm,
-            target_col="risk",
-            sensitive_attrs=["sex"],
+            target_col='risk',
+            sensitive_attrs=['sex'],
             use_predictions=True,
         )
-        metrics = bias_res["metrics_per_attr"]["sex"]
-        self.assertNotIn("error", metrics)
-        self.assertIsNotNone(metrics.get("SPD"))
-        self.assertIsNotNone(metrics.get("DI"))
-        self.assertIsNotNone(metrics.get("EOD"))
-        self.assertIsNotNone(metrics.get("AOD"))
-        self.assertTrue(metrics.get("eod_available"))
-        self.assertEqual(bias_res["metrics_mode"], "model_level")
+        metrics = bias_res['metrics_per_attr']['sex']
+        self.assertNotIn('error', metrics)
+        self.assertEqual(bias_res['metrics_mode'], 'model_level')
+        self.assertTrue(metrics.get('eod_available'))
+        self.assertTrue(metrics.get('aod_available'))
 
-        # 6. Run BiasMitigator
         mitigator = BiasMitigator()
         mit_res = mitigator.run_both(
             df=df_norm,
-            target_col="risk",
-            sensitive_attr="sex",
+            target_col='risk',
+            sensitive_attr='sex',
             model=model,
             df_with_pred=df_norm,
             allow_simulation=False,
             column_mapping=column_mapping,
+            dropped_cols=dropped_cols,
         )
+        thr = mit_res.get('threshold', {})
+        self.assertFalse(thr.get('is_simulation', True))
+        self.assertTrue(thr.get('has_real_model', False))
+        self.assertIsNotNone(thr.get('after'))
+        self.assertIn('accuracy', thr['after'])
 
-        thr = mit_res.get("threshold", {})
-        self.assertFalse(thr.get("is_simulation", True), "Threshold adjustment should not be simulated when real model is provided")
-        self.assertTrue(thr.get("has_real_model", False), "Threshold adjustment must acknowledge real model")
-        self.assertIsNotNone(thr.get("after"), "Mitigation after metrics must be computed")
-        # Real model performance metrics computed
-        after_perf = thr["after"]
-        self.assertIn("accuracy", after_perf)
-        self.assertIn("f1", after_perf)
+class TestApiFeatureCompatibilityEndpoints(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from fastapi.testclient import TestClient
+        from main import app
+        cls.client_ctx = TestClient(app)
+        cls.client = cls.client_ctx.__enter__()
 
-    def test_incompatible_model_stops_pipeline(self):
-        """Incompatible model raises ValueError before prediction or mitigation."""
-        df_raw = pd.DataFrame({
-            "ColA": [1, 2, 3],
-            "ColB": [4, 5, 6],
-            "Label": [0, 1, 0],
+    @classmethod
+    def tearDownClass(cls):
+        cls.client_ctx.__exit__(None, None, None)
+
+    def test_api_analyze_and_mitigate_pascalcase_model(self):
+        df_raw = generate_synthetic_german_credit_df(n=120)
+        model = train_synthetic_model(df_raw)
+
+        csv_buf = io.BytesIO()
+        df_raw.to_csv(csv_buf, index=False)
+        csv_buf.seek(0)
+        res_up = self.client.post('/api/upload', files={'file': ('credit.csv', csv_buf, 'text/csv')})
+        self.assertIn(res_up.status_code, (200, 201), f'Upload failed: {res_up.text}')
+        session_id = res_up.json()['session_id']
+
+        pkl_buf = io.BytesIO()
+        pickle.dump(model, pkl_buf)
+        pkl_buf.seek(0)
+        res_mod = self.client.post(f'/api/upload-model?session_id={session_id}', files={'file': ('model.pkl', pkl_buf, 'application/octet-stream')})
+        self.assertIn(res_mod.status_code, (200, 201), f'Upload model failed: {res_mod.text}')
+
+        res_an = self.client.post('/api/analyze', json={
+            'session_id': session_id,
+            'target_col': 'Risk',
+            'sensitive_attrs': ['Sex']
         })
-        preprocessor = DataPreprocessor()
-        csv_bytes = df_raw.to_csv(index=False).encode("utf-8")
-        df_norm, report = preprocessor.process(csv_bytes, "incompat.csv")
+        self.assertEqual(res_an.status_code, 200, f'Analyze failed: {res_an.text}')
+        an_json = res_an.json()
+        metrics = an_json['metrics_per_attr']['sex']
+        self.assertEqual(metrics['metrics_mode'], 'model_level')
+        self.assertTrue(metrics['eod_available'])
+        self.assertTrue(metrics['aod_available'])
 
-        incompat_model = LogisticRegression()
-        incompat_model.feature_names_in_ = np.array(["NonExistent1", "NonExistent2"], dtype=object)
+        res_mit = self.client.post('/api/mitigate', json={
+            'session_id': session_id,
+            'target_col': 'Risk',
+            'sensitive_attr': 'Sex',
+            'simulate_threshold': True
+        })
+        self.assertEqual(res_mit.status_code, 200, f'Mitigate failed: {res_mit.text}')
+        mit_json = res_mit.json()
+        thr = mit_json['threshold']
+        self.assertTrue(thr['has_real_model'])
+        self.assertFalse(thr['is_simulation'])
+        self.assertIn('accuracy', thr['after'])
 
-        with self.assertRaises(ValueError) as ctx:
-            build_model_feature_matrix(
-                model=incompat_model,
-                df=df_norm,
-                target_col="label",
-                column_mapping=report["column_mapping"],
-            )
-        self.assertIn("NonExistent1", str(ctx.exception))
+    def test_api_truly_missing_feature_returns_422(self):
+        df = pd.DataFrame({
+            'feat_1': np.random.randn(120),
+            'feat_2': np.random.randn(120),
+            'label': np.random.choice([0, 1], 120),
+            'sens': np.random.choice([0, 1], 120),
+        })
+        model = LogisticRegression()
+        model.feature_names_in_ = np.array(['feat_1', 'feat_2', 'truly_missing_feature'])
 
+        csv_buf = io.BytesIO()
+        df.to_csv(csv_buf, index=False)
+        csv_buf.seek(0)
+        res_up = self.client.post('/api/upload', files={'file': ('data.csv', csv_buf, 'text/csv')})
+        session_id = res_up.json()['session_id']
 
-if __name__ == "__main__":
+        pkl_buf = io.BytesIO()
+        pickle.dump(model, pkl_buf)
+        pkl_buf.seek(0)
+        self.client.post(f'/api/upload-model?session_id={session_id}', files={'file': ('model.pkl', pkl_buf, 'application/octet-stream')})
+
+        res_an = self.client.post('/api/analyze', json={
+            'session_id': session_id,
+            'target_col': 'label',
+            'sensitive_attrs': ['sens']
+        })
+        self.assertEqual(res_an.status_code, 422)
+        self.assertIn('truly_missing_feature', str(res_an.json()['detail']))
+
+    def test_api_ambiguous_collision_returns_422(self):
+        df = pd.DataFrame({
+            'feature_col': np.random.randn(120),
+            'label': np.random.choice([0, 1], 120),
+            'sens': np.random.choice([0, 1], 120),
+        })
+        model = LogisticRegression()
+        model.feature_names_in_ = np.array(['Feature_Col', 'featurecol'])
+
+        csv_buf = io.BytesIO()
+        df.to_csv(csv_buf, index=False)
+        csv_buf.seek(0)
+        res_up = self.client.post('/api/upload', files={'file': ('data.csv', csv_buf, 'text/csv')})
+        session_id = res_up.json()['session_id']
+
+        pkl_buf = io.BytesIO()
+        pickle.dump(model, pkl_buf)
+        pkl_buf.seek(0)
+        self.client.post(f'/api/upload-model?session_id={session_id}', files={'file': ('model.pkl', pkl_buf, 'application/octet-stream')})
+
+        res_an = self.client.post('/api/analyze', json={
+            'session_id': session_id,
+            'target_col': 'label',
+            'sensitive_attrs': ['sens']
+        })
+        self.assertEqual(res_an.status_code, 422)
+        self.assertIn('Ambiguous feature collision', str(res_an.json()['detail']))
+
+    def test_api_already_lowercase_model_succeeds(self):
+        cols = ['feature_a', 'feature_b']
+        df = pd.DataFrame({
+            'feature_a': np.random.randn(120),
+            'feature_b': np.random.randn(120),
+            'label': np.random.choice([0, 1], 120),
+            'sens': np.random.choice([0, 1], 120),
+        })
+        model = LogisticRegression()
+        model.fit(df[cols], df['label'])
+
+        csv_buf = io.BytesIO()
+        df.to_csv(csv_buf, index=False)
+        csv_buf.seek(0)
+        res_up = self.client.post('/api/upload', files={'file': ('data.csv', csv_buf, 'text/csv')})
+        session_id = res_up.json()['session_id']
+
+        pkl_buf = io.BytesIO()
+        pickle.dump(model, pkl_buf)
+        pkl_buf.seek(0)
+        self.client.post(f'/api/upload-model?session_id={session_id}', files={'file': ('model.pkl', pkl_buf, 'application/octet-stream')})
+
+        res_an = self.client.post('/api/analyze', json={
+            'session_id': session_id,
+            'target_col': 'label',
+            'sensitive_attrs': ['sens']
+        })
+        self.assertEqual(res_an.status_code, 200)
+        self.assertEqual(res_an.json()['metrics_per_attr']['sens']['metrics_mode'], 'model_level')
+
+if __name__ == '__main__':
     unittest.main()

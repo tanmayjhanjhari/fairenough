@@ -30,7 +30,7 @@ from sklearn.preprocessing import LabelEncoder
 
 def normalize_column_name(col: str) -> str:
     """The standard normalization used in FairEnough DataPreprocessor."""
-    new_col = str(col).lower()
+    new_col = str(col).strip().strip(chr(65279)).lower()
     new_col = re.sub(r'[\s\-]+', '_', new_col)
     new_col = re.sub(r'[^a-z0-9_]', '', new_col)
     return new_col
@@ -38,7 +38,21 @@ def normalize_column_name(col: str) -> str:
 
 def canonical_alphanumeric(col: str) -> str:
     """Strict alphanumeric lowercase string for robust case/separator-agnostic matching."""
-    return re.sub(r'[^a-z0-9]', '', str(col).lower())
+    return re.sub(r'[^a-z0-9]', '', str(col).strip().strip(chr(65279)).lower())
+
+
+def _edit_distance(s1: str, s2: str) -> int:
+    if len(s1) < len(s2):
+        return _edit_distance(s2, s1)
+    if len(s2) == 0:
+        return len(s1)
+    prev = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        curr = [i + 1] + [0] * len(s2)
+        for j, c2 in enumerate(s2):
+            curr[j + 1] = prev[j] if c1 == c2 else 1 + min(prev[j], prev[j + 1], curr[j])
+        prev = curr
+    return prev[len(s2)]
 
 
 def resolve_model_features(
@@ -68,8 +82,8 @@ def resolve_model_features(
     if raw_features is None:
         return {}, []
 
-    expected_features = [str(f) for f in raw_features]
-    df_columns = list(df.columns)
+    expected_features = [str(f).strip().strip(chr(65279)) for f in raw_features]
+    df_columns = [str(c).strip().strip(chr(65279)) for c in df.columns]
     target_cols_to_exclude = set()
     if target_col:
         target_cols_to_exclude.add(target_col)
@@ -104,6 +118,13 @@ def resolve_model_features(
         nm = normalize_column_name(c)
         norm_map.setdefault(nm, []).append(c)
 
+    canon_colmap: dict[str, str] = {}
+    if column_mapping:
+        for orig, norm in column_mapping.items():
+            canon_orig = canonical_alphanumeric(orig)
+            if canon_orig not in canon_colmap:
+                canon_colmap[canon_orig] = norm
+
     resolved: dict[str, str] = {}
     unresolved: list[str] = []
 
@@ -116,6 +137,13 @@ def resolve_model_features(
         # Step 2: Upload column mapping lookup (original CSV column -> normalized column)
         if column_mapping and f_exp in column_mapping:
             mapped = column_mapping[f_exp]
+            if mapped in exact_set:
+                resolved[f_exp] = mapped
+                continue
+
+        canon_f = canonical_alphanumeric(f_exp)
+        if canon_colmap and canon_f in canon_colmap:
+            mapped = canon_colmap[canon_f]
             if mapped in exact_set:
                 resolved[f_exp] = mapped
                 continue
@@ -149,6 +177,23 @@ def resolve_model_features(
                 f"matches multiple dataset columns alphanumerically: {matches_canon}."
             )
 
+        # Step 6: Unambiguous prefix/stem or edit-distance <= 1 match for minor variations
+        if len(canon_f) >= 4:
+            fuzzy_matches = []
+            for c in available_cols:
+                cn = canonical_alphanumeric(c)
+                if len(cn) >= 4:
+                    if (canon_f.startswith(cn) or cn.startswith(canon_f)) and abs(len(canon_f) - len(cn)) <= 2:
+                        fuzzy_matches.append(c)
+                    elif _edit_distance(canon_f, cn) <= 1:
+                        fuzzy_matches.append(c)
+            fuzzy_matches = list(dict.fromkeys(fuzzy_matches))
+            if len(fuzzy_matches) == 1:
+                resolved[f_exp] = fuzzy_matches[0]
+                continue
+            elif len(fuzzy_matches) > 1:
+                raise ValueError(f"Ambiguous feature mapping for model feature '{f_exp}': matches multiple dataset columns via fuzzy match: {fuzzy_matches}.")
+
         unresolved.append(f_exp)
 
     # Ambiguity check: ensure no two different model features mapped to the exact same dataset column
@@ -172,6 +217,7 @@ def build_model_feature_matrix(
     target_col: str | None = None,
     sensitive_attr: str | None = None,
     column_mapping: dict[str, str] | None = None,
+    dropped_cols: dict[str, Any] | list[str] | None = None,
 ) -> pd.DataFrame:
     """
     Build a feature matrix X whose columns and ordering match what the model expects.
@@ -189,7 +235,7 @@ def build_model_feature_matrix(
     raw_features = getattr(model, "feature_names_in_", None)
 
     if raw_features is not None:
-        expected_features = [str(f) for f in raw_features]
+        expected_features = [str(f).strip().strip(chr(65279)) for f in raw_features]
         resolved_map, missing = resolve_model_features(
             model=model,
             df=df,
@@ -197,17 +243,44 @@ def build_model_feature_matrix(
             column_mapping=column_mapping,
         )
 
+        recoverable_dropped: dict[str, Any] = {}
+        unrecoverable_missing: list[str] = []
+
         if missing:
-            raise ValueError(
-                f"Model expects feature(s) {missing} that are not present in the uploaded dataset. "
-                f"Expected features: {expected_features}. Available dataset columns: {list(df.columns)}."
-            )
+            if dropped_cols:
+                if isinstance(dropped_cols, dict):
+                    dropped_lookup = {canonical_alphanumeric(k): v for k, v in dropped_cols.items()}
+                else:
+                    dropped_lookup = {canonical_alphanumeric(k): 0 for k in dropped_cols}
+                for f_exp in missing:
+                    cn = canonical_alphanumeric(f_exp)
+                    if cn in dropped_lookup:
+                        recoverable_dropped[f_exp] = dropped_lookup[cn]
+                    elif column_mapping:
+                        orig_cn = {canonical_alphanumeric(k): canonical_alphanumeric(v) for k, v in column_mapping.items()}
+                        if cn in orig_cn and orig_cn[cn] in dropped_lookup:
+                            recoverable_dropped[f_exp] = dropped_lookup[orig_cn[cn]]
+                        else:
+                            unrecoverable_missing.append(f_exp)
+                    else:
+                        unrecoverable_missing.append(f_exp)
+            else:
+                unrecoverable_missing = missing
+
+            if unrecoverable_missing:
+                raise ValueError(
+                    f'Model expects feature(s) {unrecoverable_missing} that are not present in the uploaded dataset. '
+                    f'Expected features: {expected_features}. Available dataset columns: {list(df.columns)}.'
+                )
 
         # Reconstruct DataFrame with exact model feature names in exact expected order
         X = pd.DataFrame(index=df.index)
         for f_exp in expected_features:
-            c_df = resolved_map[f_exp]
-            X[f_exp] = df[c_df].copy()
+            if f_exp in resolved_map:
+                c_df = resolved_map[f_exp]
+                X[f_exp] = df[c_df].copy()
+            elif f_exp in recoverable_dropped:
+                X[f_exp] = recoverable_dropped[f_exp]
 
     else:
         # Fallback for models without feature_names_in_

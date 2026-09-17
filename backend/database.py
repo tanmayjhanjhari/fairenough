@@ -7,6 +7,9 @@ from pymongo import ASCENDING, DESCENDING
 from fastapi import HTTPException, status
 
 load_dotenv()
+_backend_env = os.path.join(os.path.dirname(__file__), '.env')
+if os.path.exists(_backend_env):
+    load_dotenv(_backend_env)
 
 logger = logging.getLogger(__name__)
 
