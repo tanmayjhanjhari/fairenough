@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://fairenough.vercel.app"><img src="https://img.shields.io/badge/Live_Demo-Vercel-000000?style=flat-square&logo=vercel&logoColor=white" alt="Live Demo Vercel"></a>
+  <a href="https://fairenough-rosy.vercel.app"><img src="https://img.shields.io/badge/Live_Demo-Vercel-000000?style=flat-square&logo=vercel&logoColor=white" alt="Live Demo Vercel"></a>
   <a href="https://fairenough-api.onrender.com"><img src="https://img.shields.io/badge/API-Render-00E599?style=flat-square&logo=render&logoColor=white" alt="API Render"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-MIT-76B900?style=flat-square" alt="License MIT"></a>
 </p>
