@@ -161,13 +161,13 @@ export default function RemediatePage() {
                 name="reweigh" 
                 data={mitigation.reweigh} 
                 isWinner={mitigation.winner === "reweigh"} 
-                winnerReason={mitigation.winner_reason}
+                winnerReason={mitigation.winner === "reweigh" ? mitigation.winner_reason : null}
               />
               <TechniqueCard 
                 name="threshold" 
                 data={mitigation.threshold} 
                 isWinner={mitigation.winner === "threshold"} 
-                winnerReason={mitigation.winner_reason}
+                winnerReason={mitigation.winner === "threshold" ? mitigation.winner_reason : null}
                 onRunSimulation={handleRunSimulation}
                 isSimulating={simulating}
               />

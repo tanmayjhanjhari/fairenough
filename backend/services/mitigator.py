@@ -549,22 +549,29 @@ class BiasMitigator:
                 "predicted_cause_used": predicted_cause,
             }
 
-        # ── Winner selection (dataset-level SPD only where model not real) ────
-        spd_b = abs(rew["before"]["SPD"] or 0)
-        spd_r = abs(rew["after"]["SPD"] or 0)
-        spd_t = abs(thr["after"]["SPD"] or 0)
-
+        # ── Mitigation-local bias reduction calculations ─────────────────────
+        # Each mitigation method independently owns its own before baseline and reduction
+        # Reweighing: Evaluated on held-out evaluation samples when model is retrained,
+        #             or on dataset-level outcome distributions when in dataset-only mode.
+        # Threshold:  Evaluated on full prediction distribution (or simulation).
+        spd_b_rew = abs(rew["before"].get("SPD") or 0)
+        spd_a_rew = abs(rew["after"].get("SPD") or 0)
         red_r = (
-            round(((spd_b - spd_r) / max(spd_b, 1e-9)) * 100, 1)
-            if spd_b > 0 else 0.0
+            round(max(0.0, ((spd_b_rew - spd_a_rew) / max(spd_b_rew, 1e-9)) * 100), 1)
+            if spd_b_rew > 0 else 0.0
         )
+
+        spd_b_thr = abs(thr["before"].get("SPD") or 0)
+        spd_a_thr = abs(thr["after"].get("SPD") or 0)
         red_t = (
-            round(((spd_b - spd_t) / max(spd_b, 1e-9)) * 100, 1)
-            if spd_b > 0 else 0.0
+            round(max(0.0, ((spd_b_thr - spd_a_thr) / max(spd_b_thr, 1e-9)) * 100), 1)
+            if spd_b_thr > 0 else 0.0
         )
 
         rew["effects"]["bias_reduction_pct"] = red_r
         thr["effects"]["bias_reduction_pct"] = red_t
+        rew["improvement_pct"] = red_r
+        thr["improvement_pct"] = red_t
 
         # Cause-based winner preference
         cause_winner: str | None = None
@@ -600,36 +607,53 @@ class BiasMitigator:
             )
         elif cause_winner == "reweigh" and red_r < 5:
             cause_winner = "threshold"
+            thr_spd_b = thr["before"]["SPD"]
+            thr_spd_a = thr["after"]["SPD"]
+            thr_sim = thr.get("is_simulation", True)
+            sim_note = " (simulation model)" if thr_sim else ""
             cause_reason = (
                 f"Threshold adjustment recommended because reweighing achieved "
-                f"only {red_r:.1f}% bias reduction on this dataset."
+                f"only {red_r:.1f}% bias reduction on this dataset "
+                f"(Threshold: {red_t:.1f}% reduction, SPD {thr_spd_b:.3f} → {thr_spd_a:.3f}){sim_note}."
             )
         elif cause_winner == "threshold" and red_t < 5:
             cause_winner = "reweigh"
+            rew_spd_b = rew["before"]["SPD"]
+            rew_spd_a = rew["after"]["SPD"]
             cause_reason = (
                 f"Reweighing recommended because threshold adjustment achieved "
-                f"only {red_t:.1f}% bias reduction for this dataset."
+                f"only {red_t:.1f}% bias reduction for this dataset "
+                f"(Reweighing: {red_r:.1f}% reduction, SPD {rew_spd_b:.3f} → {rew_spd_a:.3f})."
             )
 
         # Pure metric fallback
         if cause_winner is None:
             rew_spd_b = rew["before"]["SPD"]
             rew_spd_a = rew["after"]["SPD"]
+            thr_spd_b = thr["before"]["SPD"]
             thr_spd_a = thr["after"]["SPD"]
             thr_sim = thr.get("is_simulation", True)
             if red_r >= red_t:
                 cause_winner = "reweigh"
-                cause_reason = (
-                    f"Reweighing achieved {red_r:.1f}% bias reduction "
-                    f"(SPD {rew_spd_b:.3f} → {rew_spd_a:.3f}). "
-                    f"Based on actual dataset outcome distributions."
-                )
+                if rew.get("model_retrained"):
+                    cause_reason = (
+                        f"Reweighing achieved {red_r:.1f}% bias reduction "
+                        f"(SPD {rew_spd_b:.3f} → {rew_spd_a:.3f}). "
+                        f"Model retrained with sample weights on {rew.get('n_train_samples', 700)} training samples "
+                        f"and evaluated on {rew.get('n_eval_samples', 300)} held-out samples."
+                    )
+                else:
+                    cause_reason = (
+                        f"Reweighing achieved {red_r:.1f}% bias reduction "
+                        f"(SPD {rew_spd_b:.3f} → {rew_spd_a:.3f}). "
+                        f"Based on actual dataset outcome distributions."
+                    )
             else:
                 sim_note = " (simulation model)" if thr_sim else ""
                 cause_winner = "threshold"
                 cause_reason = (
                     f"Threshold adjustment achieved {red_t:.1f}% bias reduction "
-                    f"(SPD {rew_spd_b:.3f} → {thr_spd_a:.3f}){sim_note}."
+                    f"(SPD {thr_spd_b:.3f} → {thr_spd_a:.3f}){sim_note}."
                 )
 
         winner = cause_winner
@@ -739,6 +763,23 @@ class BiasMitigator:
                 if len(gt_rates) >= 2:
                     priv_name = max(gt_rates, key=lambda g: gt_rates[g])
                     unpriv_name = min(gt_rates, key=lambda g: gt_rates[g])
+
+        # Generate baseline predictions on df_work if df_with_pred not provided but model is available
+        if model is not None and (df_with_pred is None or "__predictions__" not in df_with_pred.columns):
+            try:
+                X_base = self._prepare_features_for_model(
+                    df_work, model, target_col, sensitive_attr,
+                    column_mapping=column_mapping, dropped_cols=dropped_cols
+                )
+                if X_base is not None:
+                    try:
+                        base_preds = model.predict(X_base)
+                    except Exception:
+                        base_preds = model.predict(getattr(X_base, "values", X_base))
+                    df_with_pred = df_work.copy()
+                    df_with_pred["__predictions__"] = base_preds
+            except Exception as exc:
+                print(f"[Mitigator/Reweigh] Baseline prediction generation failed: {exc}")
 
         if baseline_spd is not None and baseline_di is not None:
             before_spd = float(baseline_spd)
@@ -966,44 +1007,8 @@ class BiasMitigator:
                                     p_enc_ev = ev_unq[0]
                                     u_enc_ev = ev_unq[1]
 
-                            # ── BEFORE metrics on evaluation split (Original model on SAME held-out set) ──
-                            before["accuracy"] = round(float(accuracy_score(y_ev, y_pred_orig)), 4)
-                            before["precision"] = round(float(precision_score(y_ev, y_pred_orig, zero_division=0)), 4)
-                            before["recall"] = round(float(recall_score(y_ev, y_pred_orig, zero_division=0)), 4)
-                            before["f1"] = round(float(f1_score(y_ev, y_pred_orig, zero_division=0)), 4)
-
-                            pos_rates_orig = {}
-                            for g in np.unique(s_ev):
-                                m_g = (s_ev == g)
-                                pos_rates_orig[g] = float((y_pred_orig[m_g] == 1).mean()) if m_g.sum() > 0 else 0.0
-                            rate_p_orig = pos_rates_orig.get(p_enc_ev, 0.0)
-                            rate_u_orig = pos_rates_orig.get(u_enc_ev, 0.0)
-                            before["SPD"] = round(float(rate_u_orig - rate_p_orig), 4)
-                            before["DI"] = round(float(rate_u_orig / rate_p_orig), 4) if rate_p_orig > 1e-9 else (1.0 if rate_u_orig == 0 else None)
-
-                            b_eod, b_aod, _, _ = self._compute_eod_aod_from_predictions(
-                                y_ev, y_pred_orig, s_ev,
-                                privileged_group=p_enc_ev,
-                                unprivileged_group=u_enc_ev,
-                            )
-                            before["EOD"] = b_eod
-                            before["AOD"] = b_aod
-                            before["eod_available"] = b_eod is not None
-                            before["aod_available"] = b_aod is not None
-                            before["metrics_mode"] = "model_level"
-                            before["simulation_note"] = None
-
-                            before_gs_ev = {}
-                            for g in np.unique(s_ev):
-                                m_g = (s_ev == g)
-                                g_label = str(le_s.inverse_transform([g])[0]) if hasattr(le_s, "inverse_transform") else str(g)
-                                before_gs_ev[g_label] = {
-                                    "count": int(m_g.sum()),
-                                    "positive_count": int((y_pred_orig[m_g] == 1).sum()),
-                                    "positive_rate": round(pos_rates_orig.get(g, 0.0), 4),
-                                    "pct_of_total": round(float(m_g.sum() / len(s_ev) * 100), 1),
-                                }
-                            before["group_stats"] = before_gs_ev
+                            # Unified baseline: before is kept from original model evaluation across the dataset
+                            # (not overwritten with split metrics, ensuring identical baseline across mitigation cards)
 
                             # ── AFTER metrics on evaluation split (Reweighed model on SAME held-out set) ──
                             after["accuracy"] = round(float(accuracy_score(y_ev, y_pred_new)), 4)
@@ -1865,7 +1870,7 @@ class BiasMitigator:
         spd_b = abs(before.get("SPD") or 0)
         spd_a = abs(after.get("SPD") or 0)
         bias_reduction_pct = (
-            round(((spd_b - spd_a) / max(spd_b, 1e-9)) * 100, 1)
+            round(max(0.0, ((spd_b - spd_a) / max(spd_b, 1e-9)) * 100), 1)
             if spd_b > 0 else 0.0
         )
         spd_delta = round((after.get("SPD") or 0) - (before.get("SPD") or 0), 4)
