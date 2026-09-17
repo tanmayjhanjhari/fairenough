@@ -401,12 +401,13 @@ Open `http://localhost:5173` in your browser.
 ---
 
 ## Author
-Tanmay Jhanjhari
 
-GitHub: @tanmayjhanjhari
-Repository: https://github.com/tanmayjhanjhari/ifairenough
+**Tanmay Jhanjhari**  
+- GitHub: [@tanmayjhanjhari](https://github.com/tanmayjhanjhari)  
+- Repository: [https://github.com/tanmayjhanjhari/fairenough](https://github.com/tanmayjhanjhari/fairenough)
 
 ---
 
-📄 License
-This project is open source and available under the MIT License.
+## 📄 License
+
+This project is open source and available under the [MIT License](LICENSE).
