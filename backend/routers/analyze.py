@@ -138,6 +138,8 @@ async def analyze(
 
     if model_session is not None and "model" in model_session:
         model = model_session["model"]
+        from services.mitigator import _ensure_estimator_compatibility
+        _ensure_estimator_compatibility(model)
         column_mapping = session.get("column_mapping")
         dropped_cols = preprocessing_report.get("dropped_column_values") or preprocessing_report.get("zero_variance_cols_dropped")
 

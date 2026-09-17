@@ -53,23 +53,38 @@ async def explain(
     import pandas as pd
     df: pd.DataFrame = session["df"]
 
-    # ── Column validation ─────────────────────────────────────────────────────
+    # ── Column validation (with case-insensitive fallback) ────────
     if body.target_col not in df.columns:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Target column '{body.target_col}' not found in dataset.",
-        )
+        for c in df.columns:
+            if c.lower() == body.target_col.lower():
+                body.target_col = c
+                break
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Target column '{body.target_col}' not found in dataset.",
+            )
 
     if body.sensitive_attr not in df.columns:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Sensitive attribute '{body.sensitive_attr}' not found in dataset.",
-        )
+        for c in df.columns:
+            if c.lower() == body.sensitive_attr.lower():
+                body.sensitive_attr = c
+                break
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Sensitive attribute '{body.sensitive_attr}' not found in dataset.",
+            )
 
     # ── Fetch Metrics ─────────────────────────────────────────────────────────
     bias_results = session.get("bias_results", {})
     metrics_per_attr = bias_results.get("metrics_per_attr", {})
     attr_metrics = metrics_per_attr.get(body.sensitive_attr, {})
+    if not attr_metrics:
+        for k, v in metrics_per_attr.items():
+            if k.lower() == body.sensitive_attr.lower():
+                attr_metrics = v
+                break
 
     # ── Run explainer ─────────────────────────────────────────────────────────
     try:

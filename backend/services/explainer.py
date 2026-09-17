@@ -74,15 +74,40 @@ class BiasExplainer:
             ),
         }
 
-        # â”€â”€ 4. Historical skew (std of positive rates across groups) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-        positive_rates = (
-            work.groupby(sensitive_attr)[target_col]
-            .mean()
-            .dropna()
-        )
+        # ── 4. Historical skew (std of positive rates across groups) ──────────
+        group_stats = metrics.get("group_stats", {}) if metrics else {}
+        if group_stats and any("positive_rate" in g for g in group_stats.values()):
+            pos_rates_list = [
+                float(g["positive_rate"])
+                for g in group_stats.values()
+                if g.get("positive_rate") is not None
+            ]
+            positive_rates = pd.Series(pos_rates_list)
+        else:
+            y_target = work[target_col]
+            if pd.api.types.is_numeric_dtype(y_target) and set(y_target.dropna().unique()).issubset({0, 1, 0.0, 1.0}):
+                y_bin = y_target.astype(float)
+            elif y_target.nunique() == 2:
+                vals = sorted(y_target.dropna().unique())
+                y_bin = y_target.map({vals[0]: 0.0, vals[1]: 1.0}).astype(float)
+            elif pd.api.types.is_numeric_dtype(y_target):
+                med = float(y_target.median())
+                y_bin = (y_target > med).astype(float)
+            else:
+                mode_s = y_target.mode()
+                mode_val = mode_s.iloc[0] if not mode_s.empty else None
+                y_bin = (y_target == mode_val).astype(float)
+
+            positive_rates = (
+                work.assign(__target_bin__=y_bin)
+                .groupby(sensitive_attr)["__target_bin__"]
+                .mean()
+                .dropna()
+            )
+
         historical_skew = round(float(positive_rates.std()), 4) if len(positive_rates) > 1 else 0.0
 
-        # â”€â”€ 5. Positive rate gap â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # ── 5. Positive rate gap ──────────────────────────────────────────────
         positive_rate_gap = round(
             float(positive_rates.max() - positive_rates.min()), 4
         ) if len(positive_rates) > 1 else 0.0

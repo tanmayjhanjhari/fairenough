@@ -178,7 +178,7 @@ export default function RemediatePage() {
               <div className="glass-card p-6 border border-white/[0.06]">
                 <div className="mb-4">
                   <h3 className="text-lg font-semibold text-textPrimary">Fairness Improvement</h3>
-                  <p className="text-sm text-textSecondary">Comparing raw metric values before and after mitigation (closer to 0 is better).</p>
+                  <p className="text-sm text-textSecondary">Comparing fairness metrics before and after mitigation across parity differences and disparate impact ratio.</p>
                 </div>
                 <BeforeAfterChart mitigation={mitigation} />
               </div>

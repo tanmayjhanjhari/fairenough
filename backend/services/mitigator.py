@@ -63,6 +63,27 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 
 
+def _ensure_estimator_compatibility(estimator: Any) -> None:
+    """
+    Recursively ensure unpickled scikit-learn estimators (including Pipelines,
+    VotingClassifiers, and StackingClassifiers) have required attributes
+    across sklearn version differences (such as multi_class for LogisticRegression).
+    """
+    if estimator is None:
+        return
+    if hasattr(estimator, "predict_proba") and not hasattr(estimator, "multi_class") and "LogisticRegression" in type(estimator).__name__:
+        setattr(estimator, "multi_class", "auto")
+    if hasattr(estimator, "steps"):
+        for _, step in getattr(estimator, "steps", []):
+            _ensure_estimator_compatibility(step)
+    if hasattr(estimator, "named_steps") and isinstance(estimator.named_steps, dict):
+        for step in estimator.named_steps.values():
+            _ensure_estimator_compatibility(step)
+    if hasattr(estimator, "estimators_"):
+        for sub in getattr(estimator, "estimators_", []):
+            _ensure_estimator_compatibility(sub)
+
+
 class BiasMitigator:
     """
     Generic bias mitigator.
@@ -930,9 +951,8 @@ class BiasMitigator:
         Threshold adjustment using the REAL model's predict_proba.
         is_simulation = False.
         """
-        # Cross-version sklearn unpickling adapter for LogisticRegression
-        if hasattr(model, "predict_proba") and not hasattr(model, "multi_class") and "LogisticRegression" in type(model).__name__:
-            setattr(model, "multi_class", "auto")
+        # Cross-version sklearn unpickling adapter for LogisticRegression and Pipelines
+        _ensure_estimator_compatibility(model)
 
         try:
             # Align df_work with df (df_work may have fewer rows after dropna)
@@ -951,8 +971,16 @@ class BiasMitigator:
 
             try:
                 proba = model.predict_proba(X_aligned)
-            except Exception:
-                proba = model.predict_proba(getattr(X_aligned, "values", X_aligned))
+            except Exception as exc:
+                # If model expects NumPy array and has NO string column requirements
+                has_str_features = hasattr(model, "feature_names_in_") or hasattr(model, "transformers") or hasattr(model, "steps")
+                if not has_str_features:
+                    try:
+                        proba = model.predict_proba(getattr(X_aligned, "values", X_aligned))
+                    except Exception:
+                        raise exc
+                else:
+                    raise exc
 
             # Use second column for binary (positive class prob)
             if proba.ndim == 2 and proba.shape[1] >= 2:

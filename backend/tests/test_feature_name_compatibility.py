@@ -371,5 +371,205 @@ class TestApiFeatureCompatibilityEndpoints(unittest.TestCase):
         self.assertEqual(res_an.status_code, 200)
         self.assertEqual(res_an.json()['metrics_per_attr']['sens']['metrics_mode'], 'model_level')
 
+
+
+class TestProductionIssuesRegression(unittest.TestCase):
+    """
+    Focused regression suite verifying the 3 production issues:
+    1. BiasExplainer and /api/explain handle object/categorical columns without agg/mean errors.
+    2. Threshold adjustment with sklearn Pipelines / ColumnTransformers receiving DataFrames
+       and surviving cross-version unpickling without 'Specifying columns using strings' error.
+    3. Mitigation metrics before/after integrity for chart consumption.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from fastapi.testclient import TestClient
+        from main import app
+        cls.client_ctx = TestClient(app)
+        cls.client = cls.client_ctx.__enter__()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.client_ctx.__exit__(None, None, None)
+
+    def test_issue1_explainer_categorical_object_columns_unit(self):
+        """BiasExplainer must safely handle object/string target and categorical columns without mean() error."""
+        from services.explainer import BiasExplainer
+
+        df = pd.DataFrame({
+            "Sex": ["male", "female", "male", "female", "male", "female"],
+            "Risk": ["good", "bad", "good", "good", "bad", "good"],
+            "Telephone": ["none", "yes", "none", "none", "yes", "yes"],
+            "Age": [25, 40, 32, 29, 55, 41]
+        })
+        explainer = BiasExplainer()
+
+        # Case A: with group_stats
+        metrics = {
+            "SPD": -0.15,
+            "DI": 0.75,
+            "group_stats": {
+                "male": {"positive_rate": 0.6667, "count": 3},
+                "female": {"positive_rate": 0.5, "count": 3}
+            }
+        }
+        res_a = explainer.explain(df, target_col="Risk", sensitive_attr="Sex", metrics=metrics)
+        self.assertIn("plain_reason", res_a)
+        self.assertEqual(res_a["sensitive_attr"], "Sex")
+        self.assertEqual(res_a["target_col"], "Risk")
+
+        # Case B: without metrics (raw fallback)
+        res_b = explainer.explain(df, target_col="Risk", sensitive_attr="Sex", metrics={})
+        self.assertIn("plain_reason", res_b)
+        self.assertIsInstance(res_b["historical_skew"], float)
+
+    def test_issue1_api_explain_endpoint_categorical(self):
+        """/api/explain endpoint must return HTTP 200 with explanation for object-dtype dataset."""
+        df = pd.DataFrame({
+            "sex": ["male", "female"] * 50,
+            "risk": ["good", "bad", "good", "good", "bad"] * 20,
+            "loan_amount": np.random.randint(100, 1000, 100),
+            "telephone": ["none", "yes"] * 50
+        })
+        csv_buf = io.BytesIO()
+        df.to_csv(csv_buf, index=False)
+        csv_buf.seek(0)
+        res_up = self.client.post("/api/upload", files={"file": ("explain_test.csv", csv_buf, "text/csv")})
+        self.assertIn(res_up.status_code, (200, 201))
+        session_id = res_up.json()["session_id"]
+
+        # Run analyze first
+        res_an = self.client.post("/api/analyze", json={
+            "session_id": session_id,
+            "target_col": "risk",
+            "sensitive_attrs": ["sex"]
+        })
+        self.assertEqual(res_an.status_code, 200)
+
+        # Call /api/explain
+        res_exp = self.client.post("/api/explain", json={
+            "session_id": session_id,
+            "target_col": "risk",
+            "sensitive_attr": "sex"
+        })
+        self.assertEqual(res_exp.status_code, 200, f"Explain failed: {res_exp.text}")
+        exp_json = res_exp.json()
+        self.assertIn("plain_reason", exp_json)
+        self.assertIn("data_imbalance", exp_json)
+
+    def test_issue2_threshold_adjustment_with_pipeline_real_model(self):
+        """
+        Threshold adjustment with a ColumnTransformer Pipeline must:
+        1. Receive a valid pandas DataFrame with exact string columns.
+        2. Successfully predict_proba even when cross-version unpickling stripped multi_class.
+        3. Never crash with 'Specifying the columns using strings is only supported for dataframes'.
+        4. Set is_simulation=False and compute genuine performance metrics.
+        """
+        from sklearn.pipeline import Pipeline
+        from sklearn.compose import ColumnTransformer
+        from sklearn.preprocessing import StandardScaler
+
+        n = 120
+        df_raw = pd.DataFrame({
+            "CheckingStatus": np.random.randint(0, 5, n),
+            "LoanDuration": np.random.randint(10, 50, n),
+            "Age": np.random.randint(20, 65, n),
+            "Telephone": np.random.choice(["none", "yes"], n),
+            "Sex": np.random.choice([0, 1], n),
+            "Risk": np.random.choice([0, 1], n),
+        })
+
+        prep = ColumnTransformer([
+            ("num", StandardScaler(), ["LoanDuration", "Age"]),
+        ], remainder="drop")
+        clf = LogisticRegression(max_iter=300)
+        pipe = Pipeline([("prep", prep), ("clf", clf)])
+
+        # Train pipeline
+        pipe.fit(df_raw[["LoanDuration", "Age"]], df_raw["Risk"])
+
+        # Simulate unpickling from older sklearn where multi_class is missing
+        if hasattr(clf, "multi_class"):
+            del clf.multi_class
+
+        # Upload and analyze via API
+        csv_buf = io.BytesIO()
+        df_raw.to_csv(csv_buf, index=False)
+        csv_buf.seek(0)
+        res_up = self.client.post("/api/upload", files={"file": ("pipe_credit.csv", csv_buf, "text/csv")})
+        self.assertIn(res_up.status_code, (200, 201))
+        session_id = res_up.json()["session_id"]
+
+        pkl_buf = io.BytesIO()
+        pickle.dump(pipe, pkl_buf)
+        pkl_buf.seek(0)
+        res_mod = self.client.post(f"/api/upload-model?session_id={session_id}", files={"file": ("pipe.pkl", pkl_buf, "application/octet-stream")})
+        self.assertIn(res_mod.status_code, (200, 201))
+
+        res_an = self.client.post("/api/analyze", json={
+            "session_id": session_id,
+            "target_col": "risk",
+            "sensitive_attrs": ["sex"]
+        })
+        self.assertEqual(res_an.status_code, 200)
+
+        # Call /api/mitigate
+        res_mit = self.client.post("/api/mitigate", json={
+            "session_id": session_id,
+            "target_col": "risk",
+            "sensitive_attr": "sex",
+            "simulate_threshold": True
+        })
+        self.assertEqual(res_mit.status_code, 200, f"Mitigate failed: {res_mit.text}")
+        mit_json = res_mit.json()
+        thr = mit_json["threshold"]
+        self.assertTrue(thr.get("has_real_model"))
+        self.assertFalse(thr.get("is_simulation"))
+        self.assertIsNotNone(thr.get("after"))
+        self.assertIn("accuracy", thr["after"])
+        self.assertNotIn("Specifying the columns using strings", str(mit_json))
+
+    def test_issue3_graph_metric_integrity_between_analyze_and_mitigate(self):
+        """
+        Ensures the backend mitigation response provides honest, unadulterated before metrics
+        matching the analyze baseline exactly so the frontend chart can display them without fabrication.
+        """
+        df = pd.DataFrame({
+            "sex": [0, 1] * 60,
+            "risk": [1, 0, 1, 1, 0, 1] * 20,
+            "feature": np.random.randn(120),
+        })
+        csv_buf = io.BytesIO()
+        df.to_csv(csv_buf, index=False)
+        csv_buf.seek(0)
+        res_up = self.client.post("/api/upload", files={"file": ("metric_check.csv", csv_buf, "text/csv")})
+        session_id = res_up.json()["session_id"]
+
+        res_an = self.client.post("/api/analyze", json={
+            "session_id": session_id,
+            "target_col": "risk",
+            "sensitive_attrs": ["sex"]
+        })
+        an_metrics = res_an.json()["metrics_per_attr"]["sex"]
+        expected_spd = an_metrics["SPD"]
+        expected_di = an_metrics["DI"]
+
+        res_mit = self.client.post("/api/mitigate", json={
+            "session_id": session_id,
+            "target_col": "risk",
+            "sensitive_attr": "sex",
+            "simulate_threshold": True
+        })
+        mit_json = res_mit.json()
+        rew_before = mit_json["reweigh"]["before"]
+        thr_before = mit_json["threshold"]["before"]
+
+        self.assertAlmostEqual(rew_before["SPD"], expected_spd, places=3)
+        self.assertAlmostEqual(rew_before["DI"], expected_di, places=3)
+        self.assertAlmostEqual(thr_before["SPD"], expected_spd, places=3)
+        self.assertAlmostEqual(thr_before["DI"], expected_di, places=3)
+
+
 if __name__ == '__main__':
     unittest.main()
