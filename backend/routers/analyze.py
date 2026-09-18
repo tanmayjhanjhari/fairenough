@@ -34,6 +34,65 @@ validator = DataValidator()
 engine = BiasEngine()
 
 
+
+# ── Validate Request body ────────────────────────────────────────────────────
+
+class ValidateRequest(BaseModel):
+    session_id: str
+    target_col: str
+    sensitive_attrs: list[str] = Field(default_factory=list)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# POST /api/validate
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post("/validate", status_code=status.HTTP_200_OK)
+async def validate_dataset(
+    body: ValidateRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """
+    Validate target column and sensitive attributes for a session dataset.
+    Used by ValidationCard in the UI to give immediate feedback.
+    """
+    sessions: dict = request.app.state.sessions
+    if body.session_id not in sessions:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session '{body.session_id}' not found. Please upload a dataset first.",
+        )
+
+    session = sessions[body.session_id]
+    df: pd.DataFrame | None = session.get("df")
+    if df is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No dataset found in session.",
+        )
+
+    if not body.target_col or body.target_col not in df.columns:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Target column '{body.target_col}' not found in dataset.",
+        )
+
+    valid_sensitive = [a for a in body.sensitive_attrs if a in df.columns]
+    if not valid_sensitive:
+        return {
+            "supported": False,
+            "fallback_needed": False,
+            "engine": "fairenough",
+            "target_type": "unknown",
+            "warnings": ["No valid sensitive attributes selected."],
+            "row_count": len(df),
+            "recommendations": ["Select at least one sensitive attribute."],
+        }
+
+    validation = validator.validate(df, body.target_col, valid_sensitive)
+    session["validation"] = validation
+    return validation
+
 # ── Request body ──────────────────────────────────────────────────────────────
 
 class AnalyzeRequest(BaseModel):

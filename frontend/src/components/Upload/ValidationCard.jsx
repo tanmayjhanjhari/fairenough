@@ -25,7 +25,7 @@ export default function ValidationCard({ targetCol, sensitiveAttrs }) {
           session_id:      sessionId,
           target_col:      targetCol,
           sensitive_attrs: sensitiveAttrs,
-        });
+        }, { skipToast: true });
         if (!cancelled) {
           setResult(data);
           setValidation(data);

@@ -34,6 +34,9 @@ client.interceptors.request.use((config) => {
 client.interceptors.response.use(
   (response) => response,
   (error) => {
+    if (error.config?.skipToast) {
+      return Promise.reject(error);
+    }
     const msg = error?.response?.data?.detail || error?.response?.data?.message || error?.message || 'Something went wrong.'
     if (error?.response?.status === 401) {
       // Clear auth and redirect to login only for protected routes
