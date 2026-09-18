@@ -156,11 +156,12 @@ export default function ColumnSelector() {
     setLoading(true);
     try {
       const chosenScenario = scenarioData?.scenario || (typeof store.scenario === "string" ? store.scenario : store.scenario?.scenario);
+      const effectiveModelId = modelId || useAnalysisStore.getState().modelId || undefined;
       const { data } = await client.post("/api/analyze", {
         session_id:      sessionId,
         target_col:      targetCol,
         sensitive_attrs: sensitiveAttrs,
-        model_id:        modelId || undefined,
+        model_id:        effectiveModelId,
         scenario:        chosenScenario || undefined,
       });
       setMetrics(data);

@@ -375,7 +375,10 @@ export default function TechniqueCard({
   const isSimulation = data.is_simulation === true;
   const simulationNote = data.simulation_note;
   const isModelRequired = data.model_required === true;
-  const hasRealModel = data.has_real_model === true;
+  const hasRealModel = Boolean(
+    data.has_real_model === true ||
+    (!isSimulation && !isModelRequired && (data.model_retrained || (after?.accuracy != null && before?.accuracy != null)))
+  );
 
   return (
     <motion.div

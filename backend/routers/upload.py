@@ -46,6 +46,7 @@ MODEL_EXTENSIONS = {".pkl", ".joblib"}
 async def upload_csv(
     request: Request,
     file: UploadFile = File(...),
+    model_id: str | None = Form(None),
 ) -> dict[str, Any]:
     """
     Accept a CSV file and store it in the in-memory session store.
@@ -105,6 +106,17 @@ async def upload_csv(
     }
     if report.get("detected_scenario"):
         session_dict["scenario"] = report["detected_scenario"]
+
+    # Link model if model_id was provided (e.g. model uploaded before CSV)
+    eff_model_id = model_id or request.query_params.get("model_id")
+    if eff_model_id:
+        from services.model_storage import resolve_model
+        resolved_m, mid = resolve_model(request.app.state.sessions, session_id=session_id, model_id=eff_model_id)
+        if resolved_m is not None:
+            session_dict["model"] = resolved_m
+            session_dict["model_id"] = mid or eff_model_id
+            print(f"[UploadCSV] Linked pre-uploaded model '{session_dict['model_id']}' to session '{session_id}'")
+
     request.app.state.sessions[session_id] = session_dict
 
     NEVER_SENSITIVE = [
@@ -145,6 +157,8 @@ async def upload_csv(
         "scenario": report.get("detected_scenario", "other"),
         "suggested_sensitive": suggested_sensitive,
         "blocked_from_sensitive": blocked_from_sensitive,
+        "model_id": session_dict.get("model_id"),
+        "has_real_model": ("model" in session_dict),
     }
 
 
@@ -353,18 +367,25 @@ async def upload_model(
 
     sessions: dict = request.app.state.sessions
 
+    from services.model_storage import save_uploaded_model
+    model_path = save_uploaded_model(raw, model, model_id, session_id=session_id, filename=filename)
+
     # Always store a standalone entry keyed by model_id for direct lookups
     sessions[model_id] = {
         "model": model,
         "model_id": model_id,
         "filename": filename,
         "session_id": session_id,
+        "model_path": model_path,
+        "model_type": model_type,
     }
 
     # If session_id was provided and exists, attach the model directly to the session
     if session_id and session_id in sessions:
         sessions[session_id]["model"] = model
         sessions[session_id]["model_id"] = model_id
+        sessions[session_id]["model_path"] = model_path
+        sessions[session_id]["model_type"] = model_type
         print(f"[UploadModel] Linked model '{model_id}' ({model_type}) to session '{session_id}'")
     else:
         print(f"[UploadModel] Stored model '{model_id}' ({model_type}) standalone (session_id={session_id})")
@@ -375,4 +396,7 @@ async def upload_model(
         "n_features": n_features,
         "feature_names": feature_names,
         "feature_names_available": feature_names_available,
+        "filename": filename,
+        "session_id": session_id,
+        "has_real_model": True,
     }

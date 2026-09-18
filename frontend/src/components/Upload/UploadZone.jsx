@@ -23,6 +23,10 @@ function CsvDropzone() {
     try {
       const form = new FormData();
       form.append("file", file);
+      const currentModelId = useAnalysisStore.getState().modelId;
+      if (currentModelId) {
+        form.append("model_id", currentModelId);
+      }
       const { data } = await client.post("/api/upload", form, {
         headers: { "Content-Type": "multipart/form-data" },
       });
@@ -158,9 +162,10 @@ function CsvDropzone() {
 // ── Model Dropzone ─────────────────────────────────────────────────────────────
 function ModelDropzone() {
   const sessionId = useAnalysisStore((s) => s.sessionId);
+  const modelId = useAnalysisStore((s) => s.modelId);
+  const modelInfo = useAnalysisStore((s) => s.modelInfo);
   const { setModel } = useAnalysisStore();
   const [loading, setLoading]   = useState(false);
-  const [modelInfo, setModelInfo] = useState(null);
 
   const onDrop = useCallback(async (acceptedFiles) => {
     const file = acceptedFiles[0];
@@ -174,8 +179,7 @@ function ModelDropzone() {
       const { data } = await client.post(url, form, {
         headers: { "Content-Type": "multipart/form-data" },
       });
-      setModel(data.model_id);
-      setModelInfo(data);
+      setModel(data.model_id, data);
       toast.success(`Model loaded: ${data.model_type}`);
     } catch {
       /* interceptor handles toast */
@@ -191,24 +195,42 @@ function ModelDropzone() {
       "application/x-pkl": [".pkl"],
     },
     multiple: false,
-    disabled: loading || !!modelInfo,
+    disabled: loading || !!modelInfo || !!modelId,
   });
 
   return (
     <div className="mt-4">
       <p className="section-label">ML Model (optional)</p>
 
-      {modelInfo ? (
+      {(modelInfo || modelId) ? (
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
           className="flex items-center gap-3 bg-accent2/10 border border-accent2/30 rounded-xl px-4 py-3"
         >
           <File size={18} className="text-accent2 flex-shrink-0" />
-          <span className="text-sm text-textPrimary">{modelInfo.model_type}</span>
-          <span className="ml-auto px-2 py-0.5 rounded-full bg-accent2/20 text-accent2 text-xs font-medium">
-            {modelInfo.n_features ?? "?"} features
+          <div className="flex-1 min-w-0">
+            <span className="text-sm font-medium text-textPrimary truncate block">
+              {modelInfo?.filename || modelInfo?.model_type || "ML Model Attached"}
+            </span>
+            <span className="text-xs text-textSecondary">
+              {modelInfo?.model_type || "Trained Estimator"}
+            </span>
+          </div>
+          <span className="px-2 py-0.5 rounded-full bg-accent2/20 text-accent2 text-xs font-medium">
+            {modelInfo?.n_features ?? "?"} features
           </span>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setModel(null, null);
+            }}
+            className="p-1 hover:bg-white/10 rounded-lg text-textSecondary hover:text-textPrimary transition-colors"
+            title="Remove model"
+          >
+            <X size={15} />
+          </button>
         </motion.div>
       ) : (
         <motion.div

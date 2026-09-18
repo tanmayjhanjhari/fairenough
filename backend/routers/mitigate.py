@@ -116,34 +116,46 @@ async def mitigate(
     # ── Real model + predictions integration ─────────────────────────────────
     df_with_pred: pd.DataFrame | None = session.get("df_with_predictions")
 
-    # Multi-stage model resolution
-    real_model = session.get("model")
+    # Multi-stage model resolution with disk fallback
+    from services.model_storage import resolve_model
+    real_model, resolved_mid = resolve_model(
+        sessions=sessions,
+        session_id=body.session_id,
+        model_id=body.model_id or session.get("model_id"),
+    )
 
-    # Check model_id passed in request body
-    if real_model is None and body.model_id:
-        if body.model_id in sessions and "model" in sessions[body.model_id]:
-            real_model = sessions[body.model_id]["model"]
-            session["model"] = real_model
-            session["model_id"] = body.model_id
-            print(f"[Mitigate] Resolved model '{body.model_id}' from request body")
+    if real_model is not None:
+        session["model"] = real_model
+        if resolved_mid:
+            session["model_id"] = resolved_mid
+        print(f"[Mitigate] Resolved model '{resolved_mid}' (type: {type(real_model).__name__}) for session '{body.session_id}'")
 
-    # Check model_id stored in session
-    if real_model is None:
-        model_id_in_session = session.get("model_id")
-        if model_id_in_session and model_id_in_session in sessions and "model" in sessions[model_id_in_session]:
-            real_model = sessions[model_id_in_session]["model"]
-            session["model"] = real_model
-            print(f"[Mitigate] Resolved model '{model_id_in_session}' from session['model_id']")
-
-    # Check if a model entry in sessions belongs to this session
-    if real_model is None:
-        for k, v in sessions.items():
-            if isinstance(v, dict) and v.get("session_id") == body.session_id and "model" in v and v["model"] is not None:
-                real_model = v["model"]
-                session["model"] = real_model
-                session["model_id"] = v.get("model_id", k)
-                print(f"[Mitigate] Resolved model '{k}' linked to session '{body.session_id}'")
-                break
+    # If real_model is present but df_with_pred is missing, generate predictions automatically
+    if real_model is not None and (df_with_pred is None or "__predictions__" not in df_with_pred.columns):
+        try:
+            column_mapping = session.get("column_mapping")
+            prep_rep = session.get("preprocessing_report", {})
+            dropped_cols = prep_rep.get("dropped_column_values") or prep_rep.get("zero_variance_cols_dropped")
+            from services.feature_resolver import build_model_feature_matrix
+            X_base = build_model_feature_matrix(
+                model=real_model,
+                df=df,
+                target_col=body.target_col,
+                sensitive_attr=body.sensitive_attr,
+                column_mapping=column_mapping,
+                dropped_cols=dropped_cols,
+            )
+            if X_base is not None:
+                try:
+                    base_preds = real_model.predict(X_base)
+                except Exception:
+                    base_preds = real_model.predict(getattr(X_base, "values", X_base))
+                df_with_pred = df.copy()
+                df_with_pred["__predictions__"] = base_preds
+                session["df_with_predictions"] = df_with_pred
+                print(f"[Mitigate] Auto-generated df_with_predictions for session '{body.session_id}'")
+        except Exception as exc:
+            print(f"[Mitigate] Note: baseline prediction generation deferred: {exc}")
 
     print(f"[Mitigate] Real model available: {real_model is not None} "
           f"(type: {getattr(type(real_model), '__name__', 'None')}, "
@@ -199,9 +211,11 @@ async def mitigate(
     session["winner_reason"]  = mitigation_results.get("winner_reason", "")
 
     # ── Build response ────────────────────────────────────────────────────────
+    eff_mid = session.get("model_id") or resolved_mid or body.model_id if real_model is not None else None
     response: dict[str, Any] = {
         "session_id": body.session_id,
         "has_real_model": (real_model is not None),
+        "model_id": eff_mid,
         "reweigh": _serialise(mitigation_results["reweigh"]),
         "threshold": _serialise(mitigation_results["threshold"]),
         "winner": mitigation_results["winner"],

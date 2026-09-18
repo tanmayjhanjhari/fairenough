@@ -4,6 +4,9 @@ const useAnalysisStore = create((set, get) => ({
   // ── Session ─────────────────────────────────────────────────────────────────
   sessionId: null,
   modelId: null,
+  hasRealModel: false,
+  modelType: null,
+  modelInfo: null,
 
   // ── Dataset metadata ─────────────────────────────────────────────────────────
   columns: [],
@@ -52,9 +55,14 @@ const useAnalysisStore = create((set, get) => ({
 
   // ── Actions ───────────────────────────────────────────────────────────────────
 
-  setSession: (sessionId, meta = {}) =>
-    set({
+  setSession: (sessionId, meta = {}) => {
+    const prevModelId = get().modelId;
+    const effModelId = meta.model_id || prevModelId || null;
+    const effHasRealModel = Boolean(meta.has_real_model || meta.model_id || (prevModelId && get().hasRealModel));
+    return set({
       sessionId,
+      modelId: effModelId,
+      hasRealModel: effHasRealModel,
       columns:        meta.columns        ?? [],
       dtypes:         meta.dtypes         ?? {},
       numericCols:    meta.numeric_cols   ?? [],
@@ -66,9 +74,16 @@ const useAnalysisStore = create((set, get) => ({
       scenario:            meta.scenario ?? meta.preprocessing_report?.detected_scenario ?? null,
       suggestedSensitive:  meta.suggested_sensitive  ?? [],
       blockedSensitive:    meta.blocked_from_sensitive ?? [],
-    }),
+    });
+  },
 
-  setModel: (modelId) => set({ modelId }),
+  setModel: (modelId, meta = null) =>
+    set({
+      modelId,
+      hasRealModel: Boolean(modelId),
+      modelInfo: meta ?? (modelId ? (get().modelInfo || { model_id: modelId }) : null),
+      modelType: meta?.model_type ?? get().modelType ?? null,
+    }),
 
   setColumns: (columns) => set({ columns }),
 
@@ -93,6 +108,9 @@ const useAnalysisStore = create((set, get) => ({
       overallSeverity: data.overall_severity  ?? null,
       scenario:        (get().scenario && get().scenario !== "other") ? get().scenario : (data.scenario ?? get().scenario),
       validation:      data.validation        ?? get().validation,
+      modelId:         data.model_id          ?? get().modelId,
+      hasRealModel:    data.has_real_model    ?? data.model_used ?? get().hasRealModel,
+      modelType:       data.model_type        ?? get().modelType,
     }),
 
   setExplanation: (explanation) => set({ explanation }),
@@ -102,7 +120,12 @@ const useAnalysisStore = create((set, get) => ({
       geminiExplanations: { ...state.geminiExplanations, [attr]: text },
     })),
 
-  setMitigation: (mitigation) => set({ mitigation }),
+  setMitigation: (mitigation) =>
+    set({
+      mitigation,
+      modelId: mitigation?.model_id ?? get().modelId,
+      hasRealModel: (mitigation?.has_real_model ?? get().hasRealModel),
+    }),
 
   addGeminiMessage: (role, content) =>
     set((state) => ({
@@ -119,6 +142,9 @@ const useAnalysisStore = create((set, get) => ({
     set({
       sessionId: null,
       modelId: null,
+      hasRealModel: false,
+      modelType: null,
+      modelInfo: null,
       columns: [],
       dtypes: {},
       numericCols: [],

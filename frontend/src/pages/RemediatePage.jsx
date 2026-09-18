@@ -40,11 +40,12 @@ export default function RemediatePage() {
     setLoading(true);
     try {
       const shouldSimulate = forceSimulate || Boolean(simulatedAttrs[attr]);
+      const effectiveModelId = store.modelId || useAnalysisStore.getState().modelId || undefined;
       const { data } = await client.post("/api/mitigate", {
         session_id: sessionId,
         target_col: targetCol,
         sensitive_attr: attr,
-        model_id: store.modelId || undefined,
+        model_id: effectiveModelId,
         simulate_threshold: shouldSimulate,
       });
       if (!cancelled) {

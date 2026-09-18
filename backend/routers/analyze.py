@@ -136,15 +136,17 @@ async def analyze(
     use_predictions = False
     effective_model_id = body.model_id or session.get("model_id")
 
-    model_session = _find_model(sessions, effective_model_id, body.session_id)
-    if body.model_id and model_session is None:
+    from services.model_storage import resolve_model
+    model, resolved_mid = resolve_model(sessions, session_id=body.session_id, model_id=effective_model_id)
+
+    if body.model_id and model is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Model '{body.model_id}' not found. Please upload the model first.",
         )
 
-    if model_session is not None and "model" in model_session:
-        model = model_session["model"]
+    if model is not None:
+        effective_model_id = resolved_mid or effective_model_id
         from services.mitigator import _ensure_estimator_compatibility
         _ensure_estimator_compatibility(model)
         column_mapping = session.get("column_mapping")
@@ -202,7 +204,7 @@ async def analyze(
     session["df_with_predictions"] = df if model_used else None  # needed for mitigation only when model used
     if model_used:
         session["model"] = model
-        session["model_id"] = effective_model_id or model_session.get("model_id", body.model_id)
+        session["model_id"] = effective_model_id or resolved_mid or body.model_id
         print(f"[Analyze] Persisted real model in session '{body.session_id}' (model_id={session.get('model_id')})")
     # Store top-level keys so report generator can access directly
     session["audit_score"]      = bias_results["audit_score"]
@@ -224,6 +226,9 @@ async def analyze(
         "overall_severity": bias_results["overall_severity"],
         "grade_label": bias_results.get("grade_label", ""),
         "model_used": model_used,
+        "has_real_model": model_used,
+        "model_id": (effective_model_id or session.get("model_id")) if model_used else None,
+        "model_type": type(model).__name__ if (model_used and model is not None) else None,
         "scenario": scenario_str,
     }
 

@@ -1438,6 +1438,8 @@ class BiasMitigator:
                     for g, t in best_thresholds.items()
                 },
                 "is_simulation": False,  # Real model was used
+                "has_real_model": True,
+                "original_model_type": type(model).__name__ if model is not None else None,
                 "simulation_note": None,
             }
 
