@@ -152,7 +152,7 @@ FairEnough combines rigorous statistical fairness formulas with machine learning
 
 ### 2. Mitigation Methods
 
-* **Reweighing (Pre-Processing)**: Computes instance weights for dataset rows based on group membership and target label to balance outcome rates prior to model training.
+* **Reweighing (Pre-Processing)**: Computes instance weights based on group membership and target labels to balance outcome rates. When an ML model is uploaded, the platform automatically clones and retrains the model using these sample weights to evaluate post-mitigation fairness and accuracy on a held-out test split.
 * **Disparate Impact Remover (Pre-Processing)**: Edges feature distributions of unprivileged and privileged groups closer together to remove proxy bias while preserving rank ordering.
 * **Equalized Odds Postprocessing (Post-Processing)**: Adjusts model decision thresholds to satisfy equalized odds constraints after model predictions are generated.
 
