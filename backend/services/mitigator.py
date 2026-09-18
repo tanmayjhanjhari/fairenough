@@ -620,10 +620,16 @@ class BiasMitigator:
             cause_winner = "reweigh"
             rew_spd_b = rew["before"]["SPD"]
             rew_spd_a = rew["after"]["SPD"]
+            if spd_a_rew > spd_b_rew:
+                rew_phrase = f"absolute SPD gap increased from {spd_b_rew:.3f} to {spd_a_rew:.3f} (SPD {rew_spd_b:.3f} → {rew_spd_a:.3f})"
+            elif red_r > 0:
+                rew_phrase = f"{red_r:.1f}% reduction, SPD {rew_spd_b:.3f} → {rew_spd_a:.3f}"
+            else:
+                rew_phrase = f"absolute SPD gap unchanged at {spd_b_rew:.3f} (SPD {rew_spd_b:.3f} → {rew_spd_a:.3f})"
             cause_reason = (
                 f"Reweighing recommended because threshold adjustment achieved "
                 f"only {red_t:.1f}% bias reduction for this dataset "
-                f"(Reweighing: {red_r:.1f}% reduction, SPD {rew_spd_b:.3f} → {rew_spd_a:.3f})."
+                f"(Reweighing: {rew_phrase})."
             )
 
         # Pure metric fallback
@@ -635,26 +641,52 @@ class BiasMitigator:
             thr_sim = thr.get("is_simulation", True)
             if red_r >= red_t:
                 cause_winner = "reweigh"
+                if spd_a_rew > spd_b_rew:
+                    reweigh_phrase = (
+                        f"Reweighing: absolute SPD gap increased from {spd_b_rew:.3f} to {spd_a_rew:.3f} "
+                        f"(SPD {rew_spd_b:.3f} → {rew_spd_a:.3f})"
+                    )
+                elif red_r > 0:
+                    reweigh_phrase = (
+                        f"Reweighing achieved {red_r:.1f}% bias reduction "
+                        f"(SPD {rew_spd_b:.3f} → {rew_spd_a:.3f})"
+                    )
+                else:
+                    reweigh_phrase = (
+                        f"Reweighing: absolute SPD gap remained unchanged at {spd_b_rew:.3f} "
+                        f"(SPD {rew_spd_b:.3f} → {rew_spd_a:.3f})"
+                    )
+
                 if rew.get("model_retrained"):
                     cause_reason = (
-                        f"Reweighing achieved {red_r:.1f}% bias reduction "
-                        f"(SPD {rew_spd_b:.3f} → {rew_spd_a:.3f}). "
+                        f"{reweigh_phrase}. "
                         f"Model retrained with sample weights on {rew.get('n_train_samples', 700)} training samples "
                         f"and evaluated on {rew.get('n_eval_samples', 300)} held-out samples."
                     )
                 else:
                     cause_reason = (
-                        f"Reweighing achieved {red_r:.1f}% bias reduction "
-                        f"(SPD {rew_spd_b:.3f} → {rew_spd_a:.3f}). "
+                        f"{reweigh_phrase}. "
                         f"Based on actual dataset outcome distributions."
                     )
             else:
                 sim_note = " (simulation model)" if thr_sim else ""
                 cause_winner = "threshold"
-                cause_reason = (
-                    f"Threshold adjustment achieved {red_t:.1f}% bias reduction "
-                    f"(SPD {thr_spd_b:.3f} → {thr_spd_a:.3f}){sim_note}."
-                )
+                if spd_a_thr > spd_b_thr:
+                    thr_phrase = (
+                        f"Threshold adjustment: absolute SPD gap increased from {spd_b_thr:.3f} to {spd_a_thr:.3f} "
+                        f"(SPD {thr_spd_b:.3f} → {thr_spd_a:.3f})"
+                    )
+                elif red_t > 0:
+                    thr_phrase = (
+                        f"Threshold adjustment achieved {red_t:.1f}% bias reduction "
+                        f"(SPD {thr_spd_b:.3f} → {thr_spd_a:.3f})"
+                    )
+                else:
+                    thr_phrase = (
+                        f"Threshold adjustment: absolute SPD gap remained unchanged at {spd_b_thr:.3f} "
+                        f"(SPD {thr_spd_b:.3f} → {thr_spd_a:.3f})"
+                    )
+                cause_reason = f"{thr_phrase}{sim_note}."
 
         winner = cause_winner
         winner_reason = cause_reason

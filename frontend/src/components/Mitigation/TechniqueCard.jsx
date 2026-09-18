@@ -417,12 +417,24 @@ export default function TechniqueCard({
       </div>
 
       {/* Winner reason */}
-      {isWinner && winnerReason && (
-        <div className="mb-4 flex items-start gap-2 bg-accent/5 border border-accent/15 rounded-lg px-3 py-2">
-          <Info size={13} className="text-accent/70 flex-shrink-0 mt-0.5" />
-          <p className="text-xs text-accent/80 leading-relaxed">{winnerReason}</p>
-        </div>
-      )}
+      {isWinner && winnerReason && (() => {
+        let bannerText = winnerReason;
+        if (name === "reweigh" && bannerText.includes("achieved 0.0% bias reduction")) {
+          const spdB = before?.SPD != null ? Math.abs(before.SPD) : null;
+          const spdA = after?.SPD != null ? Math.abs(after.SPD) : null;
+          if (spdB != null && spdA != null && spdA > spdB) {
+            bannerText = bannerText
+              .replace(/Reweighing achieved 0\.0% bias reduction/g, `Reweighing: absolute SPD gap increased from ${spdB.toFixed(3)} to ${spdA.toFixed(3)}`)
+              .replace(/achieved 0\.0% bias reduction/g, `absolute SPD gap increased from ${spdB.toFixed(3)} to ${spdA.toFixed(3)}`);
+          }
+        }
+        return (
+          <div className="mb-4 flex items-start gap-2 bg-accent/5 border border-accent/15 rounded-lg px-3 py-2">
+            <Info size={13} className="text-accent/70 flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-accent/80 leading-relaxed">{bannerText}</p>
+          </div>
+        );
+      })()}
 
       {/* Model required notice */}
       {isModelRequired && (
