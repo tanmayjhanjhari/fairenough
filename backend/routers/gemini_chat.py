@@ -41,6 +41,7 @@ class GeminiChatRequest(BaseModel):
     session_id: str
     message: str
     history: list[ChatMessage] = []
+    context: dict[str, Any] | None = None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -188,43 +189,48 @@ async def gemini_chat(
     like "Why is gender biased?" or "Which mitigation should I use?"
     """
     sessions: dict = request.app.state.sessions
+    session = sessions.get(body.session_id)
 
-    if body.session_id not in sessions:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Session '{body.session_id}' not found.",
-        )
+    # ── Build condensed context (with graceful client-context fallback across server reloads) ───
+    if session is not None:
+        bias_results: dict = session.get("bias_results", {})
+        scenario_data = session.get("scenario", {})
+        scenario_str: str = scenario_data if isinstance(scenario_data, str) else scenario_data.get("scenario", "other")
+        mitigation: dict = session.get("mitigation_results", {})
 
-    session = sessions[body.session_id]
+        metrics_summary: dict = {}
+        for attr, m in bias_results.get("metrics_per_attr", {}).items():
+            if isinstance(m, dict) and "spd" in m:
+                metrics_summary[attr] = {
+                    "spd": m.get("spd"),
+                    "di": m.get("di"),
+                    "severity": m.get("severity"),
+                    "legal_flag": m.get("legal_flag"),
+                }
 
-    # ── Build condensed context ───────────────────────────────────────────────
-    bias_results: dict = session.get("bias_results", {})
-    scenario_data = session.get("scenario", {})
-    scenario_str: str = scenario_data if isinstance(scenario_data, str) else scenario_data.get("scenario", "other")
-    mitigation: dict = session.get("mitigation_results", {})
-
-    metrics_summary: dict = {}
-    for attr, m in bias_results.get("metrics_per_attr", {}).items():
-        if isinstance(m, dict) and "spd" in m:
-            metrics_summary[attr] = {
-                "spd": m.get("spd"),
-                "di": m.get("di"),
-                "severity": m.get("severity"),
-                "legal_flag": m.get("legal_flag"),
-            }
-
-    session_context = {
-        "filename": session.get("filename", "unknown"),
-        "row_count": session.get("row_count"),
-        "target_col": session.get("target_col"),
-        "sensitive_attrs": session.get("sensitive_attrs", []),
-        "audit_score": bias_results.get("audit_score"),
-        "grade": bias_results.get("grade"),
-        "overall_severity": bias_results.get("overall_severity"),
-        "scenario": scenario_str,
-        "metrics_summary": metrics_summary,
-        "mitigation_winner": mitigation.get("winner"),
-    }
+        session_context = {
+            "filename": session.get("filename", "unknown"),
+            "row_count": session.get("row_count"),
+            "target_col": session.get("target_col"),
+            "sensitive_attrs": session.get("sensitive_attrs", []),
+            "audit_score": bias_results.get("audit_score"),
+            "grade": bias_results.get("grade"),
+            "overall_severity": bias_results.get("overall_severity"),
+            "scenario": scenario_str,
+            "metrics_summary": metrics_summary,
+            "metrics_per_attr": bias_results.get("metrics_per_attr", {}),
+            "mitigation_winner": mitigation.get("winner"),
+        }
+    elif body.context:
+        # Recover context directly from client store state when in-memory session was recycled
+        session_context = body.context
+    else:
+        session_context = {
+            "scenario": "general tabular fairness",
+            "audit_score": "N/A",
+            "overall_severity": "moderate",
+            "metrics_per_attr": {},
+        }
 
     # ── Format history ────────────────────────────────────────────────────────
     history = [

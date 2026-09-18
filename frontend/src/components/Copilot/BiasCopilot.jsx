@@ -46,11 +46,23 @@ export default function BiasCopilot() {
         content: m.content,
       }));
 
+      const contextPayload = {
+        audit_score: store.auditScore,
+        grade: store.grade,
+        overall_severity: store.overallSeverity,
+        scenario: typeof store.scenario === "string" ? store.scenario : store.scenario?.scenario || "unknown",
+        target_col: store.targetCol,
+        sensitive_attrs: store.sensitiveAttrs,
+        metrics_per_attr: store.metrics || {},
+        mitigation_winner: store.mitigation?.winner,
+      };
+
       const { data } = await client.post("/api/gemini-chat", {
         session_id: sessionId,
         message: text,
         history: historyPayload,
-      });
+        context: contextPayload,
+      }, { skipToast: true });
 
       addGeminiMessage("model", data.reply);
     } catch {
