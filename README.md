@@ -366,7 +366,7 @@ Open `http://localhost:5173` in your browser.
 
 | Component | Platform | Deployment Status / Link |
 |---|---|---|
-| **Frontend Web App** | Vercel | [https://fairenough-demo.vercel.app](https://fairenough-rosy.vercel.app) *(Space for live Vercel link)* |
+| **Frontend Web App** | Vercel | [https://fairenough-demo.vercel.app](https://fairenough-rosy.vercel.app) |
 
 ### Deployment Steps
 
